@@ -882,10 +882,38 @@ class DicomViewerApp:
         self.current_mode = "red"  # Default to red mode
         self.drawn_patches = []  # Store drawn patches for potential undo
         self.drawing_polygon = False
-        popup_canvas.mpl_connect("button_press_event", self.on_polygon_click)
-        popup_canvas.mpl_connect("motion_notify_event", self.on_polygon_motion)
+        self.drawing = False
+        self.last_x = None
+        self.last_y = None
+        self.brush_size = 10
+        self.brush_color = "red"
+        self.segmentation_mode = "polygon"  # Default to polygon mode
+        popup_canvas.mpl_connect("button_press_event", self.on_mouse_press)
+        popup_canvas.mpl_connect("motion_notify_event", self.on_mouse_motion)
+        popup_canvas.mpl_connect("button_release_event", self.on_mouse_release)
+        popup_canvas.mpl_connect("scroll_event", self.adjust_brush_size)
         button_frame = tk.Frame(popup, bg="lightgray", bd=2, relief=tk.RAISED)
         button_frame.place(relx=0.05, rely=0.05, anchor=tk.NW)
+
+        try:
+            polygon_img = ImageTk.PhotoImage(Image.open("../polygon.png").resize((30, 30), Image.Resampling.LANCZOS))
+            brush_img = ImageTk.PhotoImage(Image.open("../brush.png").resize((30, 30), Image.Resampling.LANCZOS))
+        except:
+            polygon_img = None
+            brush_img = None
+
+        mode_frame = tk.Frame(button_frame, bg="lightgray")
+        mode_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.polygon_mode_button = tk.Button(mode_frame, image=polygon_img if polygon_img else None, text="Polygon" if not polygon_img else "",
+                                             command=lambda: self.set_segmentation_mode("polygon"), relief=tk.SUNKEN, bd=3)
+        self.polygon_mode_button.image = polygon_img
+        self.polygon_mode_button.pack(side=tk.LEFT, padx=2)
+
+        self.brush_mode_button = tk.Button(mode_frame, image=brush_img if brush_img else None, text="Brush" if not brush_img else "",
+                                           command=lambda: self.set_segmentation_mode("brush"), relief=tk.RAISED, bd=2)
+        self.brush_mode_button.image = brush_img
+        self.brush_mode_button.pack(side=tk.LEFT, padx=2)
         clear_button = tk.Button(button_frame, text="Clear", bg="black", fg="white", command=lambda: self.set_polygon_mode("clear"))
         clear_button.pack(fill=tk.X, padx=5, pady=2)
         green_button = tk.Button(button_frame, text="Green", bg="green", fg="white", command=lambda: self.set_polygon_mode("green"))
@@ -971,6 +999,65 @@ class DicomViewerApp:
         self.popup_ax.set_axis_off()
         self.popup_canvas.draw()
     
+    def set_segmentation_mode(self, mode):
+        self.segmentation_mode = mode
+        if mode == "polygon":
+            self.polygon_mode_button.config(relief=tk.SUNKEN, bd=3)
+            self.brush_mode_button.config(relief=tk.RAISED, bd=2)
+            self.drawing = False
+            self.last_x = None
+            self.last_y = None
+        else:
+            self.polygon_mode_button.config(relief=tk.RAISED, bd=2)
+            self.brush_mode_button.config(relief=tk.SUNKEN, bd=3)
+            self.reset_polygon()
+            self.drawing_polygon = False
+            if self.current_mode == "green":
+                self.brush_color = "green"
+            elif self.current_mode == "red":
+                self.brush_color = "red"
+            elif self.current_mode == "blue":
+                self.brush_color = "blue"
+            else:
+                self.brush_color = "black"
+
+    def on_mouse_press(self, event):
+        if self.segmentation_mode == "polygon":
+            self.on_polygon_click(event)
+        else:
+            self.on_brush_press(event)
+
+    def on_mouse_motion(self, event):
+        if self.segmentation_mode == "polygon":
+            self.on_polygon_motion(event)
+        else:
+            self.on_brush_motion(event)
+
+    def on_mouse_release(self, event):
+        if self.segmentation_mode == "brush":
+            self.on_brush_release(event)
+
+    def on_brush_press(self, event):
+        if event.inaxes == self.popup_ax and event.xdata is not None and event.ydata is not None:
+            self.drawing = True
+            self.last_x = event.xdata
+            self.last_y = event.ydata
+            self.draw(event)
+
+    def on_brush_motion(self, event):
+        if self.drawing:
+            self.draw(event)
+        else:
+            self.update_cursor_ring(event)
+
+    def on_brush_release(self, event):
+        self.drawing = False
+        self.last_x = None
+        self.last_y = None
+        self.update_popup_image(self.twoSlider.get_values()[1])
+        self.update_image_slice()
+        self.update_fat_plot()
+
     def on_polygon_click(self, event):
         """Handle mouse clicks for polygon drawing."""
         if event.inaxes != self.popup_ax or event.xdata is None or event.ydata is None:
@@ -1112,15 +1199,20 @@ class DicomViewerApp:
     def set_polygon_mode(self, mode):
         """Set the polygon drawing mode and activate new polygon drawing."""
         self.current_mode = mode
-        # Always use white color for polygon drawing
         self.polygon_color = "white"
 
-        print(f"Polygon mode set to: {mode}, color: {self.polygon_color}")  # Debug print
+        if mode == "green":
+            self.brush_color = "green"
+        elif mode == "red":
+            self.brush_color = "red"
+        elif mode == "blue":
+            self.brush_color = "blue"
+        else:
+            self.brush_color = "black"
 
-        # Reset current polygon when changing modes
+        print(f"Polygon mode set to: {mode}, color: {self.polygon_color}")
+
         self.reset_polygon()
-
-        # Activate new polygon drawing session
         self.activate_new_polygon()
 
     def activate_new_polygon(self):
@@ -1325,19 +1417,25 @@ class DicomViewerApp:
         x_index = int(round(x))
         y_index = int(round(y))
 
-        # If segmentation is flipped, swap coordinates for segmentation indexing
-        if self.flip_axes:
-            seg_x, seg_y = y_index, x_index
-        else:
-            seg_x, seg_y = x_index, y_index
-
         # Define the brush radius in pixels
         radius = self.brush_size // 2
 
         # Update the segmentation data within the brush radius
-        for j in range(seg_x - radius, seg_x + radius + 1):
-            for i in range(seg_y - radius, seg_y + radius + 1):
-                if 0 <= i < self.segmentation.shape[1] and 0 <= j < self.segmentation.shape[0]:
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                brush_x = x_index + dx
+                brush_y = y_index + dy
+
+                # Map display coordinates to segmentation coordinates (same as polygon)
+                if self.flip_axes:
+                    seg_i = brush_y
+                    seg_j = brush_x
+                else:
+                    seg_i = brush_x
+                    seg_j = brush_y
+
+                if 0 <= seg_i < self.segmentation.shape[0] and 0 <= seg_j < self.segmentation.shape[1]:
+                    i, j = seg_i, seg_j
                     # print(f"i: {i}, j: {j}, slice index: {slice_index}")
                     # print(f"self.over_image: {self.over_image}, self.current_mode: {self.current_mode}")
                     if self.over_image == 0: # on clear
