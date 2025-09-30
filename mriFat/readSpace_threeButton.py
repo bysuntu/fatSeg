@@ -7,12 +7,11 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, font
 import nibabel as nib
 from PIL import Image, ImageTk
-#from seg import segment
+
+from seg import segment as _segment
+
+
 from sat_seg import auto_segment
-
-def segment(slice_data):
-
-    return None, None, None, None
 
 class ThreeButtonSlider(tk.Frame):
     def __init__(self, master, min_val=0, max_val=100, initial_min=20, initial_current=50, initial_max=80, width=300, height=50, parent=None):
@@ -412,7 +411,7 @@ class DicomViewerApp:
 
         # Automatically click switch button once and then lock it
         self.update_button_image()  # Auto-click once
-        self.switch_button.config(state=tk.DISABLED)  # Lock the button
+        # self.switch_button.config(state=tk.DISABLED)  # Lock the button
 
         # Start periodic update
         self.update_two_values()
@@ -568,7 +567,7 @@ class DicomViewerApp:
         fatSeg = []    
         for i in range(len(self.dicom_short_pixels)):
             cur_ = self.dicom_short_pixels[i]
-            seg1, seg2, muscle, *_ = segment(cur_)
+            seg1, seg2, muscle, *_ = _segment(cur_)
             fatSeg.append(seg2 * 2 + seg1 + muscle * 3)
 
         self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
