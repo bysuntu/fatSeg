@@ -563,7 +563,7 @@ class DicomViewerApp:
             # print("No short axis slices loaded.")
             return
         target_slice = self.dicom_short_pixels[sliceId]
-
+        
         fatSeg = []    
         for i in range(len(self.dicom_short_pixels)):
             cur_ = self.dicom_short_pixels[i]
@@ -571,6 +571,7 @@ class DicomViewerApp:
             fatSeg.append(seg2 * 2 + seg1 + muscle * 3)
 
         self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
+        self.segmentation = self.segmentation.transpose(1, 0, 2)
 
         self.update_image_slice()
         self.update_short_slice()
@@ -1092,51 +1093,21 @@ class DicomViewerApp:
         if self.drawing and event.xdata is not None and event.ydata is not None:
             # print('drawing on image')
             x, y = event.xdata, event.ydata
-
+            # print(x, y, cSize, rSize)
             # Adjust bounds checking based on flip state
             if self.flip_axes:
                 # When flipped, image dimensions are swapped for display
-                x = max(min(x, cSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
-                y = max(min(y, rSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
-            else:
                 x = max(min(x, rSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
                 y = max(min(y, cSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
-            '''
-            # Store the current axis limits
-            xlim = self.ax_slice.get_xlim()
-            ylim = self.ax_slice.get_ylim()
+            else:
+                x = max(min(x, cSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
+                y = max(min(y, rSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
 
-            if self.last_x and self.last_y:
-                # Draw a line from the last position to the current position
-                self.ax_slice.plot(
-                    [self.last_x, x], [self.last_y, y],
-                    color=self.brush_color, linewidth=self.brush_size, solid_capstyle="round"
-                )
-                # Draw a circle at the current position
-                circle = plt.Circle(
-                    (x, y), self.brush_size / 2, color=self.brush_color, fill=True
-                )
-                self.ax_slice.add_patch(circle)
-
-                # Update the segmentation
-                self.update_segmentation(x, y)
-
-                # Restore the axis limits
-                self.ax_slice.set_xlim(xlim)
-                self.ax_slice.set_ylim(ylim)
-
-                # Redraw the canvas
-                self.popup_canvas.draw()
-
-            self.last_x = x
-            self.last_y = y
-
-            # self.update_image_slice()
-            '''
             # Store the current axis limits
             xlim = self.popup_ax.get_xlim()
             ylim = self.popup_ax.get_ylim()
-
+            # print('xy lim: ', xlim, ylim)
+            # print('last: ', self.last_x, self.last_y)
             if self.last_x and self.last_y:
                 # Draw a line from the last position to the current position
                 self.popup_ax.plot(
@@ -1347,8 +1318,10 @@ class DicomViewerApp:
         # Get segmentation shape
         seg_shape = self.segmentation.shape
 
+        print(f"Segmentation shape: {seg_shape}")
+
         # Create coordinate grids
-        y_coords, x_coords = np.mgrid[0:seg_shape[1], 0:seg_shape[0]]
+        y_coords, x_coords = np.mgrid[0:seg_shape[0], 0:seg_shape[1]]
         coords = np.column_stack((x_coords.ravel(), y_coords.ravel()))
 
         # Adjust coordinates if axes are flipped
@@ -1357,7 +1330,7 @@ class DicomViewerApp:
 
         # Find points inside the polygon
         inside_mask = path.contains_points(coords)
-        inside_mask = inside_mask.reshape(seg_shape[1], seg_shape[0])
+        inside_mask = inside_mask.reshape(seg_shape[0], seg_shape[1])
 
         # Apply segmentation based on mode and overlay settings
         self.apply_polygon_segmentation(inside_mask, slice_index)
@@ -1366,7 +1339,9 @@ class DicomViewerApp:
         """Apply polygon mask to segmentation based on current mode and overlay settings."""
         if self.flip_axes:
             mask = mask.T
-
+        # if self.click_state == 2:
+        #     mask = mask.T
+        
         for i in range(mask.shape[0]):
             for j in range(mask.shape[1]):
                 if mask[i, j]:  # If point is inside polygon
@@ -1411,14 +1386,15 @@ class DicomViewerApp:
 
         # Get the current slice index
         slice_index = self.twoSlider.get_values()[1]
-
+        
         # Convert coordinates to pixel indices
         x_index = int(round(x))
         y_index = int(round(y))
 
         # Define the brush radius in pixels
         radius = self.brush_size // 2
-
+        print('segmentation shape: ', self.segmentation.shape)
+        
         # Update the segmentation data within the brush radius
         for dx in range(-radius, radius + 1):
             for dy in range(-radius, radius + 1):
@@ -1432,8 +1408,10 @@ class DicomViewerApp:
                 else:
                     seg_i = brush_x
                     seg_j = brush_y
+                    
+                # print('seg_i', seg_i, seg_j, self.segmentation.shape)
 
-                if 0 <= seg_i < self.segmentation.shape[0] and 0 <= seg_j < self.segmentation.shape[1]:
+                if 0 <= seg_i < self.segmentation.shape[1] and 0 <= seg_j < self.segmentation.shape[0]:
                     i, j = seg_i, seg_j
                     # print(f"i: {i}, j: {j}, slice index: {slice_index}")
                     # print(f"self.over_image: {self.over_image}, self.current_mode: {self.current_mode}")
@@ -1442,10 +1420,10 @@ class DicomViewerApp:
                             # print('draw clear on clear')
                             self.segmentation[j, i, slice_index] = 0 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
                         elif self.current_mode == "green": # on green
-                            print('draw green on clear')
+                            # print('draw green on clear')
                             self.segmentation[j, i, slice_index] = 1 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
                         elif self.current_mode == "red": # on red
-                            print('draw red on clear')
+                            # print('draw red on clear')
                             self.segmentation[j, i, slice_index] = 2 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
                         elif self.current_mode == "blue":
                             # print('draw blue on clear')
@@ -1459,7 +1437,7 @@ class DicomViewerApp:
                             # print('draw green on green')
                             # self.segmentation[j, i, slice_index] = 1  # Green segmentation
                         elif self.current_mode == "red":
-                            print('draw red on green')
+                            # print('draw red on green')
                             self.segmentation[j, i, slice_index] = 2  if self.segmentation[j, i, slice_index] == 1 else self.segmentation[j, i, slice_index]  # Red segmentation
                         elif self.current_mode == "blue":
                             # print("draw blue on green")
@@ -1486,7 +1464,7 @@ class DicomViewerApp:
                             # print('draw green on blue')
                             self.segmentation[j, i, slice_index] = 1  if self.segmentation[j, i, slice_index] == 3 else self.segmentation[j, i, slice_index]  # Green segmentation
                         # elif self.current_mode == "red":
-                            print('draw red on blue')
+                            # print('draw red on blue')
                         elif self.current_mode == "red":
                             self.segmentation[j, i, slice_index] = 2  if self.segmentation[j, i, slice_index] == 3 else self.segmentation[j, i, slice_index] # Blue segmentation 
         
