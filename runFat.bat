@@ -1,1 +1,1 @@
-.\python-3.8.3.amd64\python .\mriFat\readSpace_threeButton.py
+.\WPy64-312100\python\python.exe .\mriFat\readSpace_threeButton.py
