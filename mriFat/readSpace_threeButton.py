@@ -538,7 +538,7 @@ class DicomViewerApp:
             if not file_path.endswith(".nii.gz"):
                 file_path += ".nii.gz"
             try:
-                # Convert segmentation to int16 for compatibility
+                # Convert segmentation to int16 for compatibility Fix Bug
                 segmentation_data = self.segmentation.astype(np.int16)
                 seg = nib.Nifti1Image(segmentation_data, self.affine if hasattr(self, 'affine') else np.eye(4))
                 nib.save(seg, file_path)
