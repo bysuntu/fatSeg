@@ -16,7 +16,7 @@ def auto_segment(image_stack, segmentation_threshold):
     """
     # Initial thresholding
     segmentation = np.where(image_stack > segmentation_threshold, 1, 0)
-
+    '''
     # Process each slice to find largest area and apply bounding box
     for i in range(segmentation.shape[0]):
         slice_seg = segmentation[i, :, :]
@@ -54,6 +54,7 @@ def auto_segment(image_stack, segmentation_threshold):
             new_slice[min_row:max_row+1, min_col:max_col+1] = box_region
 
             segmentation[i, :, :] = new_slice
+    '''
     print('before: ', segmentation.shape)
     res = np.transpose(segmentation, [2, 1, 0])
     res = np.transpose(res, [1, 0, 2])
