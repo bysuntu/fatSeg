@@ -334,7 +334,12 @@ class DicomViewerApp:
         self.left_bottom_frame = tk.Frame(left_frame, bg="#F0FFF0", width=180, height=80)
         self.left_bottom_frame.pack(padx=5, pady=5)
         self.left_bottom_frame.pack_propagate(False)
-        
+
+        # Threshold input frame
+        self.threshold_frame = tk.Frame(left_frame, bg="#FFF8DC", width=180, height=60)
+        self.threshold_frame.pack(padx=5, pady=5)
+        self.threshold_frame.pack_propagate(False)
+
         # Buttons
         self.load_short_button = tk.Button(self.left_top_frame, text="Load short axis slices", command=self.load_short_files, width=16)
         self.load_long_button = tk.Button(self.left_top_frame, text="Load long axis slices", command=self.load_long_files, width=16)
@@ -345,7 +350,18 @@ class DicomViewerApp:
         self.save_image_button = tk.Button(self.left_bottom_frame, text="Save Segmentation", command=self.save_segmentation, width=16)
         self.draw_line_button = tk.Button(self.left_mid_frame, text="Draw Line", command=self.activate_line_drawing, bg="#006503", fg="white", bd=2, relief="raised", width=16)
         self.thigh_button = tk.Button(self.left_mid_frame, text="Thigh Seg", command=self.thigh_mode, bg="#006503", fg="white", width=16)
-        
+
+        # Threshold input widgets
+        threshold_label = tk.Label(self.threshold_frame, text="Segmentation Threshold:", bg="#FFF8DC", font=("Arial", 9))
+        threshold_label.pack(pady=(5, 2))
+
+        # Create StringVar to trace changes
+        self.threshold_var = tk.StringVar(value="100")
+        self.threshold_var.trace_add('write', self.update_threshold_auto)
+
+        self.threshold_entry = tk.Entry(self.threshold_frame, width=10, justify='center', textvariable=self.threshold_var)
+        self.threshold_entry.pack(pady=(0, 5))
+
         # Right frame
         right_frame = tk.Frame(main_frame)
         right_frame.grid(row=0, column=1, sticky="nsew")
@@ -546,6 +562,23 @@ class DicomViewerApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save segmentation: {str(e)}")
     
+    def update_threshold_auto(self, *args):
+        """Update the segmentation threshold automatically as the user types."""
+        try:
+            value = self.threshold_var.get()
+            if value == "" or value == "-":
+                # Allow empty string or just minus sign while typing
+                return
+            new_threshold = int(value)
+            if new_threshold < 0:
+                # Don't update if negative, but allow typing to continue
+                return
+            self.segmentation_threshold = new_threshold
+            print(f"Segmentation threshold updated to: {self.segmentation_threshold}")
+        except ValueError:
+            # Ignore invalid input while typing
+            pass
+
     def auto_segment(self):
         if not hasattr(self, 'image_stack'):
             messagebox.showwarning("Warning", "No image stack loaded.")
