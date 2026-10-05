@@ -1,1 +1,1 @@
-.seg\Scripts\python.exe .\mriFat\readSpace_threeButton.py
+WPy64-312100\python\python.exe .\mriFat\readSpace_threeButton.py
