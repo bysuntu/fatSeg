@@ -7,11 +7,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, font
 import nibabel as nib
 from PIL import Image, ImageTk
+import tensorflow as tf
+from scipy import ndimage as ndi
 
 from seg import segment as _segment
 
 
-from sat_seg import auto_segment
+from abd_seg import segment_abdomen_stack
 
 class ThreeButtonSlider(tk.Frame):
     def __init__(self, master, min_val=0, max_val=100, initial_min=20, initial_current=50, initial_max=80, width=300, height=50, parent=None):
@@ -211,7 +213,7 @@ def normal_to_view_angles(normal):
 def normalize(slice_data):
     return (slice_data - np.min(slice_data)) / (np.max(slice_data) - np.min(slice_data))
 
-def readDicomFile(file_path, seriesName):
+def readDicomFile(file_path, seriesName, seriesSuffix=None):
     try:
         ds = dicom.dcmread(file_path)
 
@@ -225,7 +227,11 @@ def readDicomFile(file_path, seriesName):
 
         # If a specific series is requested, check if this file matches
         if seriesName:
-            if seriesName.lower() not in series_name.lower():
+            # if seriesName.lower() not in series_name.lower():
+            if not seriesName.lower() == series_name.lower():
+                return None
+        if seriesSuffix:
+            if not series_name.strip().lower().endswith(seriesSuffix.lower()):
                 return None
 
         # Check for required DICOM attributes
@@ -244,7 +250,7 @@ def readDicomFile(file_path, seriesName):
         print(f"Error reading DICOM file {file_path}: {str(e)}")
         return None
 
-def parseDicomFolder(folder_path, seriesName=None):
+def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None):
     dicom_files = []
     for root, _, files in os.walk(folder_path):
         for f in files:
@@ -261,7 +267,7 @@ def parseDicomFolder(folder_path, seriesName=None):
     valid_series = set()
 
     for file in dicom_files:
-        result = readDicomFile(file, seriesName)
+        result = readDicomFile(file, seriesName, seriesSuffix)
         if result is not None:
             pixel_, patient, series_name, *info = result
             all_pixel.append(pixel_)
@@ -273,8 +279,8 @@ def parseDicomFolder(folder_path, seriesName=None):
         print(f"Available series: {list(valid_series)}")
 
     if not all_pixel:
-        if seriesName:
-            raise ValueError(f"No valid DICOM files found for series '{seriesName}'. Available series: {list(valid_series) if valid_series else 'None'}")
+        if seriesName or seriesSuffix:
+            raise ValueError(f"No valid DICOM files found for series '{seriesName or '*' + seriesSuffix}'. Available series: {list(valid_series) if valid_series else 'None'}")
         else:
             raise ValueError("No valid DICOM files with pixel data found in the folder.")
     
@@ -291,6 +297,7 @@ class DicomViewerApp:
         self.click_state = 1  # Start with SAT mode (state 1)
         self.threshold = 0
         self.segmentation_threshold = 100
+        self.ai_seg_active = False
         self.cache = None
         self.dicom_long_info = None
         self.dicom_long_pixels = None
@@ -327,7 +334,7 @@ class DicomViewerApp:
         self.left_top_frame.pack(padx=5, pady=5)
         self.left_top_frame.pack_propagate(False)
         
-        self.left_mid_frame = tk.Frame(left_frame, bg="#F0F0FF", width=180, height=80)
+        self.left_mid_frame = tk.Frame(left_frame, bg="#F0F0FF", width=180, height=200)
         self.left_mid_frame.pack(padx=5, pady=5)
         self.left_mid_frame.pack_propagate(False)
         
@@ -350,6 +357,9 @@ class DicomViewerApp:
         self.save_image_button = tk.Button(self.left_bottom_frame, text="Save Segmentation", command=self.save_segmentation, width=16)
         self.draw_line_button = tk.Button(self.left_mid_frame, text="Draw Line", command=self.activate_line_drawing, bg="#006503", fg="white", bd=2, relief="raised", width=16)
         self.thigh_button = tk.Button(self.left_mid_frame, text="Thigh Seg", command=self.thigh_mode, bg="#006503", fg="white", width=16)
+        self.ai_seg_button = tk.Button(self.left_mid_frame, text="AI Seg", command=self.ai_seg_mode, bg="#4A0082", fg="white", width=16)
+        self.swap_xy_button = tk.Button(self.left_mid_frame, text="Swap XY", command=self.swap_xy_segmentation, bg="#555555", fg="white", width=16)
+        self.combined_seg_button = tk.Button(self.left_mid_frame, text="Combined", command=self.combined_seg_mode, bg="#8B4513", fg="white", width=16)
 
         # Threshold input widgets
         threshold_label = tk.Label(self.threshold_frame, text="Segmentation Threshold:", bg="#FFF8DC", font=("Arial", 9))
@@ -460,12 +470,18 @@ class DicomViewerApp:
             self.click_state = 2
             self.draw_line_button.pack(pady=5)
             self.thigh_button.pack(pady=5)
+            self.ai_seg_button.pack(pady=5)
+            self.combined_seg_button.pack(pady=5)
+            self.swap_xy_button.pack(pady=5)
             self.auto_seg_button.pack_forget()
         else:
             self.switch_button.config(image=self.sat_img)
             self.click_state = 1
             self.draw_line_button.pack_forget()
             self.thigh_button.pack_forget()
+            self.ai_seg_button.pack_forget()
+            self.combined_seg_button.pack_forget()
+            self.swap_xy_button.pack_forget()
             self.auto_seg_button.pack(pady=5)
 
     def flip_xy_axes(self):
@@ -501,8 +517,11 @@ class DicomViewerApp:
         if not folder:
             return
         try:
-            # self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, '6pt_DIXON_VIBE_F')
-            self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder) #, '6pt_DIXON_VIBE_F')
+            # Thigh mode: exact series name; abdomen mode: any series ending with "_F"
+            if self.click_state == 2:
+                self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, '6pt_DIXON_VIBE_F')
+            else:
+                self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesSuffix='_F')
             self.image_stack = np.array(self.dicom_short_pixels)
             # print('image stack shape: ', self.image_stack.shape)
             self.min_crop = 0
@@ -539,6 +558,7 @@ class DicomViewerApp:
         try:
             self.affine = nib.load(filename).affine
             self.segmentation = nib.load(filename).get_fdata()
+            self.ai_seg_active = False
             self.update_image_slice()
             self.update_fat_plot()
         except Exception as e:
@@ -583,7 +603,9 @@ class DicomViewerApp:
         if not hasattr(self, 'image_stack'):
             messagebox.showwarning("Warning", "No image stack loaded.")
             return
-        self.segmentation = auto_segment(self.image_stack, self.segmentation_threshold)
+        pixel_spacing = float(self.dicom_short_info[0][4][0])
+        self.segmentation = segment_abdomen_stack(self.image_stack, self.segmentation_threshold, pixel_spacing)
+        self.ai_seg_active = False
         self.update_image_slice()
         self.update_fat_plot()
     
@@ -607,12 +629,132 @@ class DicomViewerApp:
 
         self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
         self.segmentation = self.segmentation.transpose(1, 0, 2)
+        self.ai_seg_active = False
 
         self.update_image_slice()
         self.update_short_slice()
         self.update_popup_image(sliceId)
         return
-    
+
+    def ai_seg_mode(self):
+        if self.click_state != 2:
+            messagebox.showwarning("Mode Incorrect", "AI segmentation is only available in Thigh Seg mode.")
+            return
+
+        if self.dicom_short_info is None or self.dicom_short_pixels is None:
+            messagebox.showwarning("Warning", "No short axis slices loaded.")
+            return
+
+        IMG_HEIGHT, IMG_WIDTH = 256, 256
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        finetuned = os.path.join(base_dir, 'unet_thighfat_finetuned.keras')
+        model_path = finetuned if os.path.exists(finetuned) else os.path.join(base_dir, 'unet_thighfat_segmentation_model_best_loss.keras')
+        if not os.path.exists(model_path):
+            messagebox.showerror("Error", f"Model file not found: {model_path}")
+            return
+
+        try:
+            model = tf.keras.models.load_model(model_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load model: {str(e)}")
+            return
+
+        sliceId = self.twoSlider.get_values()[1]
+
+        fatSeg = []
+        for i in range(len(self.dicom_short_pixels)):
+            cur_ = self.dicom_short_pixels[i].astype(np.float32)
+
+            # Transpose DICOM (H,W) to NIfTI orientation (W,H) to match model training data
+            cur_t = cur_.T
+            nifti_h, nifti_w = cur_t.shape[:2]
+
+            # Resize to model input size and add channel dim
+            resized = tf.image.resize(cur_t[..., np.newaxis], [IMG_HEIGHT, IMG_WIDTH])
+
+            # Normalize to [0, 1]
+            max_val = tf.reduce_max(resized)
+            if max_val > 0:
+                resized = resized / max_val
+
+            # Add batch dimension and predict
+            input_img = tf.expand_dims(resized, axis=0)
+            prediction = model.predict(input_img, verbose=0)
+            mask = np.argmax(prediction[0], axis=-1).astype(np.uint8)
+
+            # Resize mask back to NIfTI-oriented size with nearest-neighbor
+            mask_resized = tf.image.resize(mask[..., np.newaxis], [nifti_h, nifti_w], method='nearest')
+            mask_resized = mask_resized.numpy()[:, :, 0].astype(np.uint8)
+
+            # Merge all foreground labels (1,2,3) into single green label (1)
+            mask_resized = (mask_resized > 0).astype(np.uint8)
+
+            fatSeg.append(mask_resized)
+
+        self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
+        self.ai_seg_active = True
+
+        self.update_image_slice()
+        self.update_short_slice()
+        self.update_popup_image(sliceId)
+
+    def swap_xy_segmentation(self):
+        if not hasattr(self, 'segmentation') or self.segmentation is None:
+            messagebox.showwarning("Warning", "No segmentation loaded.")
+            return
+
+        # Swap x, negate y, then rotate 90 degrees (resize to fit original shape)
+        from PIL import Image
+        orig_h, orig_w = self.segmentation.shape[0], self.segmentation.shape[1]
+        for s in range(self.segmentation.shape[2]):
+            rotated = np.rot90(np.fliplr(self.segmentation[:, :, s]))
+            img = Image.fromarray(rotated.astype(np.uint8))
+            img = img.resize((orig_w, orig_h), Image.NEAREST)
+            self.segmentation[:, :, s] = np.array(img)
+
+        sliceId = self.twoSlider.get_values()[1]
+        self.update_image_slice()
+        self.update_short_slice()
+        self.update_popup_image(sliceId)
+
+    def combined_seg_mode(self):
+        if self.click_state != 2:
+            messagebox.showwarning("Mode Incorrect", "Combined segmentation is only available in Thigh Seg mode.")
+            return
+
+        if not hasattr(self, 'segmentation') or self.segmentation is None:
+            messagebox.showwarning("Warning", "No segmentation loaded. Run AI Seg first.")
+            return
+
+        if self.dicom_short_info is None or self.dicom_short_pixels is None:
+            messagebox.showwarning("Warning", "No short axis slices loaded.")
+            return
+
+        sliceId = self.twoSlider.get_values()[1]
+
+        for s in range(self.segmentation.shape[2]):
+            green_mask = (self.segmentation[:, :, s] > 0).astype(np.uint8)
+
+            cur_ = self.dicom_short_pixels[s]
+            seg1, seg2, muscle, *_ = _segment(cur_)
+
+            # Conventional results are in DICOM orientation; segmentation uses double transpose
+            seg2_t = seg2.T
+            muscle_t = muscle.T
+
+            combined = green_mask.copy()  # keep green (1) as base
+            combined[np.where((seg2_t > 0) & (green_mask > 0))] = 2   # red (IMAT)
+            combined[np.where((muscle_t > 0) & (green_mask > 0))] = 3  # blue (muscle)
+
+            self.segmentation[:, :, s] = combined
+
+        self.ai_seg_active = False
+
+        self.update_image_slice()
+        self.update_short_slice()
+        self.update_popup_image(sliceId)
+
     def activate_line_drawing(self):
         if hasattr(self, 'temporary_line'):
             try:
