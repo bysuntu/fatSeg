@@ -33,13 +33,13 @@ The 15% level was chosen by eye: lower levels keep specks of grainy muscle as IM
 
 ### Agreement between Dixon and T1 TSE
 
-On `rawThigh` (7 cases scanned with both sequences, same slice positions), T1 compared with Dixon (with the IMAT check):
+On `rawThigh` (8 cases scanned with both sequences, same slice positions; the 8% level was tuned on 7 of them, 01260017NHCSLX was not used for tuning), T1 compared with Dixon (with the IMAT check):
 
 | | Mean difference (T1 − Dixon) | Per case | Dice |
 |---|---|---|---|
-| SAT | −3.9% | −5.6% to −2.2% | 0.957 |
-| IMAT | +0.8% | −11.9% to +9.6% | 0.505 |
-| Muscle | +2.8% | +1.2% to +5.8% | 0.918 |
+| SAT | −4.0% | −5.6% to −2.2% | 0.952 |
+| IMAT | +2.5% | −11.9% to +14.3% | 0.496 |
+| Muscle | +2.5% | +0.2% to +5.8% | 0.918 |
 
 The Dixon check level (8%) is tuned to the T1 level (15%). If one changes, the other has to be re-tuned.
 
@@ -49,10 +49,10 @@ The Dixon check level (8%) is tuned to the T1 level (15%). If one changes, the o
 - **Loading in abdomen mode:** still `_F` only. A folder with only `t1_tse_tra` offers to switch to thigh mode instead of failing.
 - **Thigh Seg** uses `seg.py` + `dixon_local_imat.py` for Dixon slices and `t1_seg.py` for T1 slices.
 - **AI Seg and Combined** refuse T1 slices with a message, because the U-Net was trained on Dixon fat images only. Combined now also uses the stack-level Dixon segmentation and the IMAT check.
+- **JPEG-compressed DICOMs** (e.g. JPEG Lossless) can now be read: `pylibjpeg` and `pylibjpeg-libjpeg` were added to `requirements.txt` and installed in the bundled Python.
 - **DICOM reading:** the series name is checked before pixels are decoded (faster when a folder holds many series), and when no matching series is found the error lists the series that are in the folder.
 
 ### Known issues
 
 - **Hip end:** in 1 of the 11 `thighFat` cases, the skin line between the legs is too faint on the top few slices, and part of the other leg is still counted as SAT.
 - **Validation:** the Dixon hip-end settings were tuned and checked on the same 11 `thighFat` cases, whose labels are corrected output of this same method. The T1 settings were checked against the Dixon method, not against hand-corrected T1 labels. IMAT overlap between the sequences is moderate (Dice ~0.5).
-- **JPEG-compressed DICOMs:** `rawThigh/01260017NHCSLX` is stored as JPEG Lossless and cannot be read by the bundled Python, in either sequence. Installing `pylibjpeg` and `pylibjpeg-libjpeg` would fix this.

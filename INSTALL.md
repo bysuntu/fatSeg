@@ -90,6 +90,7 @@ This downloads about 1.5 GB and can take several minutes. Wait until the prompt 
 | Package | Used for |
 |---|---|
 | pydicom | reading DICOM images |
+| pylibjpeg, pylibjpeg-libjpeg | reading DICOMs stored with JPEG (e.g. JPEG Lossless) compression |
 | numpy, scipy, scikit-image, opencv-python | image processing and segmentation |
 | shapely, pygeoops | geometry helpers used by the thigh method |
 | nibabel | reading and writing segmentations (`.nii.gz`) |

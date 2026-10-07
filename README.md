@@ -133,13 +133,13 @@ The 15% level was chosen by eye: lower levels keep specks of grainy muscle as IM
 
 ### Agreement between the two sequences
 
-The T1 IMAT is taken as the reference, and the Dixon IMAT check level (8%) was chosen so that the Dixon IMAT matches it. On `rawThigh` (7 cases scanned with both sequences, same slice positions), T1 compared with Dixon:
+The T1 IMAT is taken as the reference, and the Dixon IMAT check level (8%) was chosen so that the Dixon IMAT matches it. On `rawThigh` (8 cases scanned with both sequences, same slice positions; the 8% level was tuned on 7 of them, 01260017NHCSLX was not used for tuning), T1 compared with Dixon:
 
 | | Mean difference (T1 − Dixon) | Per case | Dice |
 |---|---|---|---|
-| SAT | −3.9% | −5.6% to −2.2% | 0.957 |
-| IMAT | +0.8% | −11.9% to +9.6% | 0.505 |
-| Muscle | +2.8% | +1.2% to +5.8% | 0.918 |
+| SAT | −4.0% | −5.6% to −2.2% | 0.952 |
+| IMAT | +2.5% | −11.9% to +14.3% | 0.496 |
+| Muscle | +2.5% | +0.2% to +5.8% | 0.918 |
 
 T1 SAT is consistently a little lower because fewer partly-fat voxels at the skin and fascia count as fat. IMAT overlap is only moderate (Dice ~0.5) because IMAT streaks are one or two pixels wide; the volumes agree much better than the pixel positions.
 
@@ -178,7 +178,6 @@ T1 SAT is consistently a little lower because fewer partly-fat voxels at the ski
 - **Thigh Seg near the hip:** where the skin line between the legs is too faint to cut along, a piece of the other leg can still be counted as SAT on the top few slices (seen in 1 of 11 `thighFat` cases).
 - **Thigh Seg tuning:** the Dixon hip-end settings were tuned on the same 11 `thighFat` cases they were checked on, and those labels were made by correcting this method's own output. The T1 settings were checked against the Dixon method, not against hand-corrected T1 labels.
 - **T1 TSE:** AI Seg and Combined are not available (the U-Net was trained on Dixon fat images only).
-- **Compressed DICOMs:** series stored as JPEG Lossless cannot be read by the bundled Python. Installing `pylibjpeg` and `pylibjpeg-libjpeg` adds support.
 
 ## Data protection
 
