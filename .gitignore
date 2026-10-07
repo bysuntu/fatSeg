@@ -20,6 +20,7 @@ T12S1_DIXON_VIBE/
 6pt_DIXON_VIBE/
 sat_stl/
 sat_file/
+rawThigh/
 
 # Model weights (~93 MB each; share separately, e.g. a release or Git LFS)
 *.keras

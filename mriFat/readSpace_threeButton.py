@@ -10,7 +10,9 @@ from PIL import Image, ImageTk
 import tensorflow as tf
 from scipy import ndimage as ndi
 
-from seg import segment as _segment
+from seg import segment_stack as _segment_stack
+from t1_seg import segment_stack as _segment_stack_t1
+import dixon_local_imat  # dixon_local_imat (optional IMAT check for Dixon)
 
 
 from abd_seg import segment_abdomen_stack
@@ -213,19 +215,12 @@ def normal_to_view_angles(normal):
 def normalize(slice_data):
     return (slice_data - np.min(slice_data)) / (np.max(slice_data) - np.min(slice_data))
 
-def readDicomFile(file_path, seriesName, seriesSuffix=None):
+def readDicomFile(file_path, seriesName, seriesSuffix=None, seriesContains=None):
     try:
         ds = dicom.dcmread(file_path)
+        series_name = str(getattr(ds, 'SeriesDescription', ''))
 
-        # Check if this file has pixel data
-        if not hasattr(ds, 'pixel_array') or ds.pixel_array is None:
-            return None
-
-        pixel_array = ds.pixel_array
-        patient = getattr(ds, 'PatientName', 'Unknown')
-        series_name = getattr(ds, 'SeriesDescription', '')
-
-        # If a specific series is requested, check if this file matches
+        # If a specific series is requested, check if this file matches (before decoding pixels)
         if seriesName:
             # if seriesName.lower() not in series_name.lower():
             if not seriesName.lower() == series_name.lower():
@@ -233,6 +228,16 @@ def readDicomFile(file_path, seriesName, seriesSuffix=None):
         if seriesSuffix:
             if not series_name.strip().lower().endswith(seriesSuffix.lower()):
                 return None
+        if seriesContains:
+            if seriesContains.lower() not in series_name.lower():
+                return None
+
+        # Check if this file has pixel data
+        if not hasattr(ds, 'pixel_array') or ds.pixel_array is None:
+            return None
+
+        pixel_array = ds.pixel_array
+        patient = getattr(ds, 'PatientName', 'Unknown')
 
         # Check for required DICOM attributes
         if not hasattr(ds, 'ImageOrientationPatient') or not hasattr(ds, 'ImagePositionPatient'):
@@ -250,7 +255,7 @@ def readDicomFile(file_path, seriesName, seriesSuffix=None):
         print(f"Error reading DICOM file {file_path}: {str(e)}")
         return None
 
-def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None):
+def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None, seriesContains=None):
     dicom_files = []
     for root, _, files in os.walk(folder_path):
         for f in files:
@@ -267,7 +272,7 @@ def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None):
     valid_series = set()
 
     for file in dicom_files:
-        result = readDicomFile(file, seriesName, seriesSuffix)
+        result = readDicomFile(file, seriesName, seriesSuffix, seriesContains)
         if result is not None:
             pixel_, patient, series_name, *info = result
             all_pixel.append(pixel_)
@@ -279,8 +284,16 @@ def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None):
         print(f"Available series: {list(valid_series)}")
 
     if not all_pixel:
-        if seriesName or seriesSuffix:
-            raise ValueError(f"No valid DICOM files found for series '{seriesName or '*' + seriesSuffix}'. Available series: {list(valid_series) if valid_series else 'None'}")
+        if seriesName or seriesSuffix or seriesContains:
+            # List what the folder does contain, to make a naming mismatch obvious
+            found = set()
+            for file in dicom_files:
+                try:
+                    found.add(str(getattr(dicom.dcmread(file, stop_before_pixels=True), 'SeriesDescription', '')))
+                except Exception:
+                    pass
+            wanted = seriesName or (f"*{seriesContains}*" if seriesContains else f"*{seriesSuffix}")
+            raise ValueError(f"No valid DICOM files found for series '{wanted}'. Series in folder: {sorted(found) if found else 'None'}")
         else:
             raise ValueError("No valid DICOM files with pixel data found in the folder.")
     
@@ -303,6 +316,7 @@ class DicomViewerApp:
         self.dicom_long_pixels = None
         self.dicom_short_info = None
         self.dicom_short_pixels = None
+        self.short_sequence = None  # 'DIXON_F' or 'T1_TSE', set when short axis slices are loaded
         self.after_id = None  # To store after callback ID
         self.flip_axes = False  # Track whether axes are flipped
         
@@ -517,11 +531,32 @@ class DicomViewerApp:
         if not folder:
             return
         try:
-            # Thigh mode: exact series name; abdomen mode: any series ending with "_F"
+            # Thigh mode: Dixon fat series (exact name), else T1 TSE (name contains "t1_tse_tra");
+            # abdomen mode: any series ending with "_F". self.short_sequence picks the thigh method.
             if self.click_state == 2:
-                self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, '6pt_DIXON_VIBE_F')
+                try:
+                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, '6pt_DIXON_VIBE_F')
+                    self.short_sequence = 'DIXON_F'
+                except ValueError:
+                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesContains='t1_tse_tra')
+                    self.short_sequence = 'T1_TSE'
             else:
-                self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesSuffix='_F')
+                try:
+                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesSuffix='_F')
+                    self.short_sequence = 'DIXON_F'
+                except ValueError as no_f_series:
+                    # T1 TSE is a thigh sequence: offer to switch to thigh mode instead of failing
+                    try:
+                        pixels, info = parseDicomFolder(folder, seriesContains='t1_tse_tra')
+                    except ValueError:
+                        raise no_f_series
+                    if not messagebox.askyesno("Thigh sequence",
+                                               f"This folder has no '_F' series, but has the thigh sequence '{info[0][1]}'.\n"
+                                               "Switch to thigh mode and load it?"):
+                        return
+                    self.update_button_image()  # abdomen -> thigh mode
+                    self.dicom_short_pixels, self.dicom_short_info = pixels, info
+                    self.short_sequence = 'T1_TSE'
             self.image_stack = np.array(self.dicom_short_pixels)
             # print('image stack shape: ', self.image_stack.shape)
             self.min_crop = 0
@@ -621,11 +656,12 @@ class DicomViewerApp:
             return
         target_slice = self.dicom_short_pixels[sliceId]
         
-        fatSeg = []    
-        for i in range(len(self.dicom_short_pixels)):
-            cur_ = self.dicom_short_pixels[i]
-            seg1, seg2, muscle, *_ = _segment(cur_)
-            fatSeg.append(seg2 * 2 + seg1 + muscle * 3)
+        # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence
+        if self.short_sequence == 'T1_TSE':
+            fatSeg = _segment_stack_t1(self.dicom_short_pixels, pixel_spacing=self.dicom_short_info[0][4])
+        else:
+            fatSeg = _segment_stack(self.dicom_short_pixels)
+            fatSeg = dixon_local_imat.apply(self.dicom_short_pixels, fatSeg, self.dicom_short_info[0][4])  # dixon_local_imat
 
         self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
         self.segmentation = self.segmentation.transpose(1, 0, 2)
@@ -643,6 +679,10 @@ class DicomViewerApp:
 
         if self.dicom_short_info is None or self.dicom_short_pixels is None:
             messagebox.showwarning("Warning", "No short axis slices loaded.")
+            return
+
+        if self.short_sequence == 'T1_TSE':
+            messagebox.showwarning("Sequence", "The AI model was trained on Dixon fat (_F) images only. Use Thigh Seg for t1_tse_tra.")
             return
 
         IMG_HEIGHT, IMG_WIDTH = 256, 256
@@ -723,6 +763,10 @@ class DicomViewerApp:
             messagebox.showwarning("Mode Incorrect", "Combined segmentation is only available in Thigh Seg mode.")
             return
 
+        if self.short_sequence == 'T1_TSE':
+            messagebox.showwarning("Sequence", "Combined uses the AI model, which was trained on Dixon fat (_F) images only. Use Thigh Seg for t1_tse_tra.")
+            return
+
         if not hasattr(self, 'segmentation') or self.segmentation is None:
             messagebox.showwarning("Warning", "No segmentation loaded. Run AI Seg first.")
             return
@@ -733,11 +777,13 @@ class DicomViewerApp:
 
         sliceId = self.twoSlider.get_values()[1]
 
+        conventional = _segment_stack(self.dicom_short_pixels)
+        conventional = dixon_local_imat.apply(self.dicom_short_pixels, conventional, self.dicom_short_info[0][4])  # dixon_local_imat
         for s in range(self.segmentation.shape[2]):
             green_mask = (self.segmentation[:, :, s] > 0).astype(np.uint8)
 
-            cur_ = self.dicom_short_pixels[s]
-            seg1, seg2, muscle, *_ = _segment(cur_)
+            seg2 = (conventional[s] == 2).astype(np.uint8)
+            muscle = (conventional[s] == 3).astype(np.uint8)
 
             # Conventional results are in DICOM orientation; segmentation uses double transpose
             seg2_t = seg2.T

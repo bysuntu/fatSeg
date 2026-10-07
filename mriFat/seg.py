@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy import ndimage as ndi
 from skimage.measure import label, regionprops
 from skimage.morphology import remove_small_objects
+from skimage.filters import sato
 import os
 import cv2
 from shapely.geometry import Polygon
@@ -86,6 +87,10 @@ def extract_bone_in_roi(labeled_image, seg1):
             allContours.append([i, area_, edge_, edge_ / area_, area_ / (edge_ * edge_)])
 
         
+
+    if not allContours:
+        # No bone candidate (e.g. slice outside the thigh): keep every bright spot as IMAT
+        return np.zeros_like(labeled_image), others, None
 
     allContours = sorted(allContours, key=lambda x: x[-1], reverse=True)
     index_ = allContours[0][0]
@@ -225,12 +230,14 @@ def refine_fat_ring(seg):
 
     return newSeg
 
-def segment(inputImage,dicom_path = None):
+def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_thr=80):
+    # sat_thr / imat_thr: fat thresholds for the SAT ring and for IMAT inside it.
+    # The defaults are for Dixon fat (_F) pixel values; t1_seg.py passes its own.
     if dicom_path is None:
         image = inputImage
     else:
         image = load_dicom_image(dicom_path)
-    labeledFirst = segment_bright_regions(image, threshold=100, min_size=5)
+    labeledFirst = segment_bright_regions(image, threshold=sat_thr, min_size=5)
     seg1, _, bbox = extract_segments_in_roi(labeledFirst)
 
     # Refine Fat Ring
@@ -241,7 +248,7 @@ def segment(inputImage,dicom_path = None):
     seg1 = refine_fat_ring(seg1)
 
     masked_image = apply_roi_mask(image, bbox, seg1)
-    labeledSecond = segment_bright_regions(masked_image, threshold=80, min_size=5)
+    labeledSecond = segment_bright_regions(masked_image, threshold=imat_thr, min_size=5)
     
     # bone, seg2, _ = extract_segments_in_roi(labeledSecond)
     bone, seg2, _ = extract_bone_in_roi(labeledSecond, seg1)
@@ -259,7 +266,9 @@ def segment(inputImage,dicom_path = None):
     # Combine the filled hole with the original image
     outer_region = (mask[1:-1, 1:-1] == 0).astype(np.uint8)
 
-    muscle = outer_region - seg1 - seg2 - bone
+    # Bright spots outside the body are noise, not IMAT
+    seg2 = seg2 * outer_region
+    muscle = np.clip(outer_region - seg1 - seg2 - bone, 0, 1)
 
     '''
     plt.subplot(141)
@@ -283,9 +292,85 @@ def segment(inputImage,dicom_path = None):
     plt.show()
     '''
 
+    if return_outer:
+        return seg1, seg2, muscle, image, outer_region
     return seg1, seg2, muscle, image
     # return seg1, seg2, dark2_ - bone, image
     # visualize_segments(image, masked_image, seg1, seg2)
+
+
+def _largest_component(mask):
+    labeled, n = ndi.label(mask)
+    if n <= 1:
+        return mask > 0
+    return labeled == (np.argmax(np.bincount(labeled.ravel())[1:]) + 1)
+
+
+def _solidity(mask):
+    if not mask.any():
+        return 0.0
+    return regionprops(mask.astype(np.uint8))[0].solidity
+
+
+def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_thr=100, imat_thr=80):
+    """Segment a stack of axial thigh slices: 1 SAT, 2 IMAT, 3 muscle.
+
+    Near the hip the other leg or the perineum lies against the thigh and is picked up
+    as SAT. A clean thigh outline is nearly convex (solidity >= solidity_thr), a merged
+    one is not. Clean slices are kept as they are. On merged slices the thigh is limited
+    to the neighbouring slice's thigh grown by max_shift pixels, and is also cut along
+    the thin dark skin line where the two legs touch (Sato dark-ridge response above
+    ridge_thr). Slices are processed outward from the clean slice nearest the middle.
+
+    slices: sequence of 2D arrays. Returns an int16 array (n_slices, H, W).
+    """
+    n = len(slices)
+    parts = []
+    for im in slices:
+        try:
+            seg1, seg2, muscle, _, outer = segment(im, return_outer=True, sat_thr=sat_thr, imat_thr=imat_thr)
+            parts.append((seg1.astype(np.uint8), seg2.astype(np.uint8), muscle.astype(np.uint8), outer > 0))
+        except Exception:
+            empty = np.zeros(np.shape(im), np.uint8)
+            parts.append((empty, empty, empty, empty > 0))
+
+    body = [_largest_component(p[3]) for p in parts]
+    solidity = [_solidity(b) for b in body]
+    clean = [i for i in range(n) if solidity[i] >= solidity_thr]
+    start = min(clean, key=lambda i: abs(i - n // 2)) if clean else int(np.argmax(solidity))
+
+    scale = np.percentile(np.asarray(slices, dtype=np.float32), 99) or 1.0
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * max_shift + 1, 2 * max_shift + 1))
+    thigh = [None] * n
+    thigh[start] = body[start]
+    for order in (range(start + 1, n), range(start - 1, -1, -1)):
+        prev = thigh[start]
+        for i in order:
+            if solidity[i] >= solidity_thr or not prev.any() or not body[i].any():
+                cur = body[i]
+            else:
+                allowed = (cv2.dilate(prev.astype(np.uint8), kernel) > 0) & parts[i][3]
+                # Cut along the skin line between the legs, keep the piece that
+                # overlaps the previous thigh most, then give back the cut line itself
+                ridge = sato(np.asarray(slices[i], np.float32) / scale, sigmas=[1, 1.5, 2], black_ridges=True)
+                pieces, n_pieces = ndi.label(allowed & (ridge <= ridge_thr))
+                if n_pieces:
+                    overlap = np.bincount(pieces[prev].ravel(), minlength=n_pieces + 1)
+                    overlap[0] = 0
+                    piece = (pieces == np.argmax(overlap)).astype(np.uint8)
+                    cur = (cv2.dilate(piece, np.ones((3, 3), np.uint8), iterations=2) > 0) & allowed
+                else:
+                    cur = allowed
+                cur = _largest_component(cur)
+                cur = ndi.binary_fill_holes(cur) & parts[i][3]
+            thigh[i] = cur
+            prev = cur
+
+    labels = np.zeros((n,) + np.shape(slices[0]), np.int16)
+    for i, (seg1, seg2, muscle, _) in enumerate(parts):
+        t = thigh[i].astype(np.uint8)
+        labels[i] = seg1 * t + 2 * seg2 * t + 3 * muscle * t
+    return labels
 
 # Example usage:
 # main("path_to_your_file.dcm")
