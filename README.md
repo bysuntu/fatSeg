@@ -107,7 +107,8 @@ On each axial slice (`seg.segment`):
 1. **SAT:** fat above a fixed threshold (100 on the raw pixel values); the largest fat region is the subcutaneous ring.
 2. **Femur:** the bright marrow inside the ring that does not touch it. If no femur is found, the slice is still segmented, without bone.
 3. **IMAT:** the remaining fat inside the ring (threshold 80). Bright specks outside the body are ignored.
-4. **Muscle:** everything else inside the body outline.
+4. **Inner edge of the SAT ring:** fat within 2 pixels of the ring that is connected to it is SAT. (The ring clean-up trims about a pixel off its inner edge, and IMAT is not searched that close to the ring, so this pure fat used to be counted as muscle.)
+5. **Muscle:** everything else inside the body outline.
 
 Over the whole stack (`seg.segment_stack`), the other leg is kept out near the hip, where it lies against the thigh and would otherwise count as SAT:
 
@@ -115,9 +116,9 @@ Over the whole stack (`seg.segment_stack`), the other leg is kept out near the h
 - Clean slices are kept as they are. On merged slices, the thigh may grow at most 2 pixels beyond the neighbouring slice's thigh, and it is also cut along the thin dark skin line where the two legs touch (Sato ridge filter).
 - Slices are processed outward from the clean slice nearest the middle of the stack.
 
-Finally, **`dixon_local_imat.py`** checks each IMAT pixel against its neighbours (the same check as step 5 of the T1 method below, at a level of 8%) and turns IMAT that is not clearly brighter than the surrounding muscle into muscle. It is used by Thigh Seg and Combined. `ENABLED = False` in that file turns it off; deleting the file and the three lines marked `dixon_local_imat` in `readSpace_threeButton.py` removes it.
+Finally, **`dixon_local_imat.py`** checks each IMAT pixel against its neighbours (the same check as step 5 of the T1 method below, at a level of 25%) and turns IMAT that is not clearly brighter than the surrounding muscle into muscle. It is used by Thigh Seg and Combined. The 25% level was set against the scanner's fat-fraction map (`6pt_DIXON_VIBE_FF`): the IMAT volume then equals the volume of pixels that are at least 50% fat (1.03×, 0.94–1.11× per case on `rawThigh`), and 97–98% of the IMAT pixels are at least 30% fat (without the check, about half were less than 30% fat). `ENABLED = False` in that file turns it off; deleting the file and the three lines marked `dixon_local_imat` in `readSpace_threeButton.py` removes it.
 
-Checked on `thighFat` (11 hand-corrected cases, without the IMAT check): SAT Dice 0.998 (worst case 0.991), IMAT 0.993, muscle 0.998.
+Checked on `thighFat` (11 hand-corrected cases, before the IMAT check and the inner-edge step): SAT Dice 0.998 (worst case 0.991), IMAT 0.993, muscle 0.998. Those labels were made by correcting this method's own output, so they cannot judge the two later steps; the fat-fraction map can.
 
 ### T1 TSE (`t1_tse_tra`): `mriFat/t1_seg.py`
 
@@ -127,23 +128,23 @@ Implemented separately from the Dixon fat method, so changes to it cannot affect
 2. **Denoise** with non-local means at 3× the estimated noise level, which calms speckle in the muscle that would otherwise count as IMAT.
 3. **Fat fraction image:** each slice is divided by its local fat signal (nearby fat, smoothed over 20 mm), so fat is ~1 and muscle ~0.35 on both sides of the thigh.
 4. **Segment** with the same steps as `seg.py` (including the hip-end handling), using thresholds of 0.40 of the fat signal for both SAT and IMAT.
-5. **IMAT check by local contrast:** some muscle groups (e.g. hamstrings, adductors) are uniformly brighter on T1 without containing fat. Each IMAT pixel is compared with the median of its neighbours within 10 mm (the local muscle level): it stays IMAT when it lies at least 15% of the way from that level to the local fat level, in a speck of at least 5 pixels, otherwise it becomes muscle. Only IMAT (red) is re-checked; muscle (blue) and SAT (green) are not changed by this step.
+5. **IMAT check by local contrast:** some muscle groups (e.g. hamstrings, adductors) are uniformly brighter on T1 without containing fat. Each IMAT pixel is compared with the median of its neighbours within 10 mm (the local muscle level): it stays IMAT when it lies at least 40% of the way from that level to the local fat level, in a speck of at least 5 pixels, otherwise it becomes muscle. Only IMAT (red) is re-checked; muscle (blue) and SAT (green) are not changed by this step.
 
-The 15% level was chosen by eye: lower levels keep specks of grainy muscle as IMAT. The settings are at the top of `t1_seg.py` (`DENOISE_STRENGTH = 0` turns denoising off, `LOCAL_RADIUS_MM = None` turns step 5 off).
+The 40% level was tuned so the T1 IMAT matches the Dixon IMAT of the same scans (see below); lower levels keep specks of grainy muscle as IMAT. The settings are at the top of `t1_seg.py` (`DENOISE_STRENGTH = 0` turns denoising off, `LOCAL_RADIUS_MM = None` turns step 5 off).
 
 ### Agreement between the two sequences
 
-The T1 IMAT is taken as the reference, and the Dixon IMAT check level (8%) was chosen so that the Dixon IMAT matches it. On `rawThigh` (8 cases scanned with both sequences, same slice positions; the 8% level was tuned on 7 of them, 01260017NHCSLX was not used for tuning), T1 compared with Dixon:
+The Dixon method is the reference: its IMAT is checked against the scanner's fat-fraction map, which T1 cannot provide. The T1 level (40%) was tuned so the T1 IMAT matches it. On `rawThigh` (8 cases scanned with both sequences, same slice positions), T1 compared with Dixon:
 
 | | Mean difference (T1 − Dixon) | Per case | Dice |
 |---|---|---|---|
-| SAT | −4.0% | −5.6% to −2.2% | 0.952 |
-| IMAT | +2.5% | −11.9% to +14.3% | 0.496 |
-| Muscle | +2.5% | +0.2% to +5.8% | 0.918 |
+| SAT | −3.7% | −5.2% to −2.0% | 0.955 |
+| IMAT | +3.4% | −12.7% to +18.5% | 0.504 |
+| Muscle | +2.3% | +0.5% to +4.9% | 0.948 |
 
-T1 SAT is consistently a little lower because fewer partly-fat voxels at the skin and fascia count as fat. IMAT overlap is only moderate (Dice ~0.5) because IMAT streaks are one or two pixels wide; the volumes agree much better than the pixel positions.
+T1 SAT is consistently a little lower because fewer partly-fat voxels at the skin and fascia count as fat. IMAT overlap is only moderate (Dice ~0.5): IMAT streaks are one or two pixels wide, and T1 contrast cannot tell partly-fat pixels from muscle as well as the Dixon fat image (against the fat-fraction map, a third of the T1 IMAT pixels are less than 30% fat, vs 2–3% for Dixon). The volumes agree much better than the pixel positions.
 
-**The two levels are linked:** if `LOCAL_CONTRAST` in `t1_seg.py` is changed, `CONTRAST` in `dixon_local_imat.py` has to be re-tuned to keep the sequences in agreement.
+**The two levels are linked:** the T1 level is tuned to the Dixon one. If `CONTRAST` in `dixon_local_imat.py` (or anything else in the Dixon method) changes, `LOCAL_CONTRAST` in `t1_seg.py` has to be re-tuned to keep the sequences in agreement.
 
 ## Other scripts
 

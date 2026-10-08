@@ -32,12 +32,12 @@ Idea:
      muscle never becomes IMAT here, and SAT is never touched.
   6. Labels are resized back to the original grid.
 
-Tuned on rawThigh (7 cases with both sequences, same slice positions) against the Dixon
-method (seg.py without the IMAT check) on the Dixon images of the same scan: volumes
-SAT 0.96x, muscle ~1.07x; Dice SAT 0.96. IMAT is ~0.75x the unchecked Dixon IMAT: only
-fat that is clearly brighter than the surrounding muscle is kept (LOCAL_CONTRAST = 0.15;
-lower values keep specks of grainy muscle as IMAT). This T1 IMAT is the reference that
-dixon_local_imat.py is tuned to.
+LOCAL_CONTRAST was tuned on rawThigh (8 cases with both sequences, same slice positions)
+against the Dixon method of the same scans (seg.py + dixon_local_imat.py, whose IMAT matches
+the pixels that are at least 50% fat on the scanner's fat-fraction map). T1 compared with
+Dixon: SAT -3.7%, IMAT +3.4% (-12.7% to +18.5% per case), muscle +2.3%; Dice SAT 0.96,
+IMAT 0.50, muscle 0.95. T1 cannot tell partly-fat pixels from muscle as well as Dixon, so
+its IMAT matches in volume rather than pixel by pixel.
 
 Labels: 0 background / bone, 1 SAT, 2 IMAT, 3 muscle.
 """
@@ -55,7 +55,7 @@ FAT_SMOOTH_MM = 20.0   # scale of the local fat signal (coil sensitivity varies 
 TARGET_SPACING_MM = 0.8  # Dixon pixel size the seg.py settings were tuned at
 DENOISE_STRENGTH = 3.0   # non-local means strength, in units of the estimated noise; 0 = off
 LOCAL_RADIUS_MM = 10.0   # neighbourhood for the local muscle level; None = skip step 5
-LOCAL_CONTRAST = 0.15    # IMAT stays IMAT if this far from local muscle (0) towards local fat (1);
+LOCAL_CONTRAST = 0.40    # IMAT stays IMAT if this far from local muscle (0) towards local fat (1);
                          # lower values keep specks of grainy muscle as IMAT
 MIN_IMAT_PIXELS = 5      # smaller IMAT specks (at 0.8 mm pixels) count as muscle
 

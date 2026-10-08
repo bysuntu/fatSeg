@@ -268,6 +268,14 @@ def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_
 
     # Bright spots outside the body are noise, not IMAT
     seg2 = seg2 * outer_region
+
+    # refine_fat_ring trims about a pixel off the inner edge of the SAT ring, and IMAT is not
+    # searched within 2 pixels of the ring, so that fat used to end up as muscle. Give fat in
+    # that band that is connected to the ring back to SAT.
+    band = cv2.dilate(seg1.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
+    rim = band & (image > sat_thr) & (outer_region > 0) & (seg2 == 0) & (bone == 0)
+    seg1 = ndi.binary_propagation(seg1 > 0, mask=(seg1 > 0) | rim).astype(np.uint8)
+
     muscle = np.clip(outer_region - seg1 - seg2 - bone, 0, 1)
 
     '''

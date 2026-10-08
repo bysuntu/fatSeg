@@ -4,10 +4,11 @@ neighbours (the step t1_seg.py uses for T1 TSE). IMAT that is not at least CONTR
 way from the local muscle level to the local fat level becomes muscle; muscle and SAT are
 never changed. Used by Thigh Seg and Combined for Dixon slices.
 
-CONTRAST was set so the Dixon IMAT matches the T1 TSE IMAT (t1_seg.py, taken as the
-reference) of the same scans: on rawThigh (7 cases with both sequences) Dixon / T1 IMAT
-volume 1.00x (0.91-1.13x per case) and the best overlap with the T1 IMAT (Dice 0.51, vs
-0.47 without this check, where Dixon IMAT was 1.34x the T1 IMAT).
+CONTRAST was set against the scanner's fat-fraction map (6pt_DIXON_VIBE_FF) on rawThigh
+(8 cases): at 0.25 the IMAT volume equals the volume of pixels that are at least 50% fat
+(1.03x, 0.94-1.11x per case), with overlap (Dice) 0.78 with those pixels and 0.77 with
+pixels that are at least 30% fat. Without this check, half of the Dixon IMAT pixels were
+less than 30% fat.
 
 ENABLED = False turns it off (Dixon results are then those of seg.py). To remove it
 completely: delete this file and the three lines marked "dixon_local_imat" in
@@ -19,8 +20,8 @@ import t1_seg
 
 ENABLED = True
 RADIUS_MM = 10.0   # neighbourhood for the local muscle level
-CONTRAST = 0.08    # IMAT stays IMAT if this far from local muscle (0) towards local fat (1);
-                   # set to match the T1 TSE IMAT of the same scans
+CONTRAST = 0.25    # IMAT stays IMAT if this far from local muscle (0) towards local fat (1);
+                   # set so IMAT matches the pixels that are at least 50% fat (fat-fraction map)
 MIN_PIXELS = 5     # smaller IMAT specks count as muscle
 
 
