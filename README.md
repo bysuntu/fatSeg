@@ -86,12 +86,15 @@ Saved files contain an **identity affine**: they don't carry patient geometry. A
 
 ## How the abdominal segmentation works
 
-Implemented in `mriFat/abd_seg.py`, separately from the thigh code. On each axial slice:
+Implemented in `mriFat/abd_seg.py`, separately from the thigh code. On each axial slice (step 4 also uses the neighbouring slices):
 
 1. **Fat threshold:** set to 40% of the local fat signal (`FAT_FRACTION`). The fat signal is the median SAT intensity of the slice, smoothed over neighbouring slices. This makes volumes comparable between scans with different intensity scales and voxel sizes.
 2. **Body outline:** the subcutaneous fat ring, closed over small gaps and filled. **Arms are removed**, whether they lie close to the torso or touch it.
-3. **SAT/VAT boundary:** 360 rays are cast from the body centre. On each ray, SAT is the run of fat from the skin inward up to the muscle wall. Gaps of up to 2 mm are tolerated (`GAP_TOL_MM`).
-4. **Correction of faulty rays:** rays that disagree with their neighbours are replaced by the local median. These come from fat bridging into VAT, or from vessels and the navel crease inside the SAT. A wider fault along the anterior midline (linea alba) is bridged by interpolation.
+3. **SAT/VAT boundary:** 360 rays are cast from the body centre. On each ray, SAT is the run of fat from the skin inward up to the muscle wall. Gaps of up to 2 mm are tolerated (`GAP_TOL_MM`). On the flanks and back (outside ±60° of the front midline), only dark pixels, below 20% of the fat signal (`DARK_FRACTION`), count as a gap: that is muscle, while the grey fascia lines that run through thick SAT do not stop the ray. At the front every non-fat pixel counts, because the muscle wall and bowel there can be grey too.
+4. **Correction of faulty rays:**
+   - Rays that disagree with their neighbours on the same slice are replaced by the local median (fat bridging into VAT, or vessels and the navel crease inside the SAT).
+   - A sharp dip in SAT thickness that returns within 20 rays (a ray stopped too early) is bridged by interpolation all around the body. A sharp bump that returns is bridged only at the front (±45°, e.g. along the linea alba), because thick fat pads on the flanks and pelvis are real.
+   - **Across slices:** each ray is compared with the same ray on the 3 slices above and below. If its SAT is much thinner (below 75% of their median, minus 2 mm), it takes their median. This repairs wide wedges of VAT cutting into the SAT on one or two slices; real anatomy changes gradually along the body (`XSLICE_*` settings).
 5. **Labelling:** fat outside the boundary is SAT, fat inside is VAT. Fat inside the vertebral body (marrow) is left unlabelled.
 
 The tunable settings are at the top of `abd_seg.py`.
@@ -175,7 +178,8 @@ T1 SAT is consistently a little lower because fewer partly-fat voxels at the ski
 
 - **Orientation:** vertebra detection in abdomen mode assumes the standard axial view, with the front of the body at the top of the image.
 - **Arms and open rings:** if the SAT ring is open and an arm also touches the torso on the same slice, that arm isn't removed.
-- **Thin VAT in lean patients:** VAT in lean patients is mostly thin strands, which are sensitive to resolution. Across sequences, VAT differed by 1.3–6.6% on the five test cases (SAT by 0.2–5.6%).
+- **Thin VAT in lean patients:** VAT in lean patients is mostly thin strands, which are sensitive to resolution. Between `AbdoCompL3` and `T12S1…DIXON VIBE` over their common range, VAT differs by 1.1–6.5% on the five test cases (SAT by 0.0–5.8%).
+- **SAT/VAT boundary in the back corners:** where thick SAT meets the posterior muscles, a thin strip of SAT just under the muscle wall can still be labelled VAT on some slices (e.g. `03260016NHCTHO`), more often on the coarser `T12S1` scan. Correct it with the brush tool. Simple rules tested to remove it (largest fat piece as SAT, small VAT pieces next to SAT turned into SAT, VAT within a few mm of SAT turned into SAT) also moved real VAT and were not adopted.
 - **Thigh Seg near the hip:** where the skin line between the legs is too faint to cut along, a piece of the other leg can still be counted as SAT on the top few slices (seen in 1 of 11 `thighFat` cases).
 - **Thigh Seg tuning:** the Dixon hip-end settings were tuned on the same 11 `thighFat` cases they were checked on, and those labels were made by correcting this method's own output. The T1 settings were checked against the Dixon method, not against hand-corrected T1 labels.
 - **T1 TSE:** AI Seg and Combined are not available (the U-Net was trained on Dixon fat images only).

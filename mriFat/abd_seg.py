@@ -16,16 +16,27 @@ Idea (adapted from the thigh method):
      them to the torso. Arms that really touch the torso and have their own core are split
      off at the narrow contact (watershed on the distance to the body outline).
   3. Cast rays from the body centre. On each ray, SAT is the run of fat that starts
-     at the skin and ends at the first non-fat gap (the abdominal muscle wall).
+     at the skin and ends at the first non-fat gap (the abdominal muscle wall); gaps up to
+     GAP_TOL_MM are tolerated. On the flanks and back (outside FRONT_HALF_DEG of the
+     anterior midline) only dark pixels (below DARK_FRACTION of the fat signal, i.e.
+     muscle) count towards the gap: grey fascia lines inside thick SAT would otherwise stop
+     the run early on sharp scans. At the front every non-fat pixel counts, since the
+     muscle wall and bowel there can be grey too.
   4. Rays that disagree with their neighbours (bridges into VAT make them too thick;
      vessels or the navel crease inside SAT make them too thin) are replaced by the
      median of neighbouring rays.
      Rays that are too thick are judged more strictly: at the anterior midline
      (linea alba) there is little muscle to stop the SAT run.
-     A wider fault along the linea alba (anterior midline) shows as a sharp jump away
-     from the neighbouring thickness and back again; such segments in the anterior
-     sector are bridged by interpolation. Elsewhere sharp steps are real anatomy
-     (e.g. where the muscle wall ends at the posterior flank) and are kept.
+     A wider fault shows as a sharp jump away from the neighbouring thickness and back
+     again; such segments are bridged by interpolation. Dips (the run stopped early, e.g.
+     at a fascia line on a flank) are bridged all around the body; bumps (e.g. a bridge
+     into VAT along the linea alba) only in the anterior sector, because thick fat pads on
+     the flanks and pelvis are real. A single sharp step without a return is real anatomy
+     (e.g. where the muscle wall ends at the posterior flank) and is kept.
+     Finally each ray is compared with the same ray on the neighbouring slices
+     (XSLICE_WINDOW on each side): a ray much thinner than there (a wide wedge of VAT
+     cutting into SAT on one or two slices) takes their median thickness, since real
+     anatomy changes gradually along the body.
   5. Every fat pixel in the body is either SAT or VAT:
      SAT = fat outside the SAT inner edge, VAT = fat inside it.
   6. Bone marrow is not VAT: the vertebral body (a round, mid-intensity region on the
@@ -46,9 +57,17 @@ THICK_TOL = 0.10       # a ray is too thick if it exceeds the median by > 10% (+
 THIN_TOL = 0.25        # a ray is too thin if it falls below the median by > 25% (+ 3 px)
 JUMP_TOL = 0.15        # thickness change between adjacent rays counted as a sharp jump
 MAX_PLATEAU = 20       # rays; widest jump-and-return segment that is bridged
-ANTERIOR_SECTOR = 45   # degrees either side of the anterior midline where bridging applies
 GAP_TOL_MM = 2.0       # mm of non-fat tolerated inside the SAT run (noise); in mm so that
                        # thin muscle wall is not skipped on coarse scans
+DARK_FRACTION = 0.2    # flanks and back: only pixels below this share of the fat signal count
+                       # towards the gap (muscle); grey fascia lines inside SAT are passed
+FRONT_HALF_DEG = 60    # degrees either side of the anterior midline where every non-fat
+                       # pixel counts (grey muscle wall and bowel at the front)
+ANTERIOR_SECTOR = 45   # degrees either side of the anterior midline where thick bumps are
+                       # bridged too (thin dips are bridged all around)
+XSLICE_WINDOW = 3      # slices on each side used to check each ray across slices
+XSLICE_THIN = 0.75     # a ray is too thin if below this share of the neighbouring slices'
+XSLICE_ABS_MM = 2.0    # median thickness, minus this many mm
 MIN_SIZE = 10          # px; smaller fat specks are dropped
 OUTSIDE_KEEP = 0.5     # fat pieces with less than this share inside the torso zone are dropped
 TORSO_MARGIN_MM = 10   # torso zone = within ARM_CORE_MM + this of the torso core
@@ -150,11 +169,15 @@ def _bridge_plateaus(values):
     # Anterior midline is angle 3*pi/2 (smaller row = anterior); rays are 360/n degrees apart
     k_ant = 3 * n // 4
     half = int(ANTERIOR_SECTOR * n / 360)
-    k = k_ant - half
-    while k < k_ant + half:
-        base = t[k]
+    k = 0
+    while k < n:
+        base = t[k % n]
         tol = JUMP_TOL * base + 3
-        if abs(t[(k + 1) % n] - base) > tol:
+        # Dips (SAT run stopped early, e.g. at a fascia line) are bridged all around; bumps
+        # only at the front, since thick fat pads on the flanks and pelvis are real
+        front = abs((k - k_ant + n // 2) % n - n // 2) <= half
+        jump = t[(k + 1) % n] - base
+        if jump < -tol or (front and jump > tol):
             # The segment must stay away from the base level and return to it with a
             # sharp jump within MAX_PLATEAU rays; a gradual return is real anatomy
             # (e.g. thick flank SAT tapering off) and is left alone
@@ -178,8 +201,11 @@ def _polygon_mask(center, radii, angles, shape):
     return mask
 
 
-def _sat_inner_region(fat, body, center, pixel_spacing):
-    """Region enclosed by the SAT inner edge (everything deeper than SAT)."""
+def _sat_rays(fat, dark, body, center, pixel_spacing):
+    """Skin radius and corrected SAT thickness (pixels) on each ray, and the ray angles.
+
+    `dark` marks muscle-dark pixels; on the flanks and back only these count as gap.
+    """
     h, w = fat.shape
     step = 0.5
     radii = np.arange(0, np.hypot(h, w), step)
@@ -189,6 +215,8 @@ def _sat_inner_region(fat, body, center, pixel_spacing):
     gap_steps = int(round(GAP_TOL_MM / pixel_spacing / step))
 
     for k, a in enumerate(angles):
+        # Anterior midline is angle 3*pi/2 (smaller row = anterior)
+        front = abs((np.degrees(a) - 270 + 180) % 360 - 180) <= FRONT_HALF_DEG
         rows = np.round(center[0] + radii * np.sin(a)).astype(int)
         cols = np.round(center[1] + radii * np.cos(a)).astype(int)
         valid = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
@@ -199,22 +227,68 @@ def _sat_inner_region(fat, body, center, pixel_spacing):
         i_skin = inside[-1]
         r_skin[k] = rr[i_skin]
         on_fat = fat[rows[:i_skin + 1], cols[:i_skin + 1]]
+        on_gap = ~on_fat if front else dark[rows[:i_skin + 1], cols[:i_skin + 1]]
 
         # SAT: fat run from the skin inward, tolerating small gaps
         i_end, gap, i = i_skin, 0, i_skin
         while i >= 0:
             if on_fat[i]:
                 i_end, gap = i, 0
-            else:
+            elif on_gap[i]:
                 gap += 1
                 if gap > gap_steps:
                     break
             i -= 1
         r_sat[k] = rr[i_end] if on_fat[i_end] else r_skin[k]
 
-    sat_thick = _smooth_outliers(_bridge_plateaus(r_skin - r_sat))
-    r_sat = np.maximum(r_skin - sat_thick, 0)
-    return _polygon_mask(center, r_sat, angles, fat.shape)
+    return r_skin, _smooth_outliers(_bridge_plateaus(r_skin - r_sat)), angles
+
+
+def _slice_rays(image, fat_ref, pixel_spacing):
+    """Fat, body and SAT rays of one slice, or None if the slice has no body."""
+    fat = _remove_small(image > FAT_FRACTION * fat_ref)
+    if not fat.any():
+        return None
+    body = _body_mask(fat, pixel_spacing)
+    if body is None or not body.any():
+        return None
+    center = ndi.center_of_mass(body)
+    dark = image < DARK_FRACTION * fat_ref
+    r_skin, thick, angles = _sat_rays(fat, dark, body, center, pixel_spacing)
+    return dict(fat=fat, body=body, center=center, r_skin=r_skin, thick=thick, angles=angles)
+
+
+def _labels_from_rays(image, fat_ref, rays):
+    """SAT = fat outside the SAT inner edge, VAT = fat inside it (vertebral marrow excluded)."""
+    r_sat = np.maximum(rays['r_skin'] - rays['thick'], 0)
+    sat_inner = _polygon_mask(rays['center'], r_sat, rays['angles'], rays['fat'].shape)
+    sat = rays['fat'] & rays['body'] & ~sat_inner
+    vat = rays['fat'] & rays['body'] & sat_inner
+    vert = _vertebra_mask(image, rays['body'], rays['center'], fat_ref)
+    if vert is not None:
+        vat &= ~vert
+    return sat, vat
+
+
+def _check_across_slices(rays, pixel_spacing):
+    """Replace rays whose SAT is much thinner than on the neighbouring slices.
+
+    A run stopped early (e.g. a wide wedge of VAT cutting into SAT) usually appears on one
+    or two slices only; real anatomy changes gradually along the body.
+    """
+    n = len(rays)
+    thick = np.array([r['thick'] if r else np.full(N_RAYS, np.nan) for r in rays])
+    abs_px = XSLICE_ABS_MM / pixel_spacing
+    for i, r in enumerate(rays):
+        if r is None:
+            continue
+        nb = [j for j in range(i - XSLICE_WINDOW, i + XSLICE_WINDOW + 1)
+              if j != i and 0 <= j < n and rays[j] is not None]
+        if len(nb) < 2:
+            continue
+        ref = np.median(thick[nb], axis=0)
+        too_thin = thick[i] < XSLICE_THIN * ref - abs_px
+        r['thick'] = np.where(too_thin, ref, thick[i])
 
 
 def _vertebra_mask(image, body, center, fat_ref):
@@ -245,23 +319,11 @@ def _vertebra_mask(image, body, center, fat_ref):
 
 def segment_abdomen(image, fat_ref, pixel_spacing=1.0):
     """Segment one axial slice given the fat signal and pixel size (mm). Returns (sat, vat) masks."""
-    empty = np.zeros(image.shape, dtype=bool)
-    fat = _remove_small(image > FAT_FRACTION * fat_ref)
-    if not fat.any():
+    rays = _slice_rays(image, fat_ref, pixel_spacing)
+    if rays is None:
+        empty = np.zeros(image.shape, dtype=bool)
         return empty, empty
-
-    body = _body_mask(fat, pixel_spacing)
-    if body is None or not body.any():
-        return empty, empty
-    center = ndi.center_of_mass(body)
-
-    sat_inner = _sat_inner_region(fat, body, center, pixel_spacing)
-    sat = fat & body & ~sat_inner
-    vat = fat & body & sat_inner
-    vert = _vertebra_mask(image, body, center, fat_ref)
-    if vert is not None:
-        vat &= ~vert
-    return sat, vat
+    return _labels_from_rays(image, fat_ref, rays)
 
 
 def fat_reference(image_stack, threshold, pixel_spacing=1.0):
@@ -288,9 +350,13 @@ def segment_abdomen_stack(image_stack, threshold, pixel_spacing=1.0):
     fat_ref = fat_reference(image_stack, threshold, pixel_spacing)
     print(f'Abdomen: fat signal {fat_ref.min():.0f}-{fat_ref.max():.0f}, '
           f'fat threshold {FAT_FRACTION * fat_ref.min():.0f}-{FAT_FRACTION * fat_ref.max():.0f}')
+    rays = [_slice_rays(sl, fat_ref[i], pixel_spacing) for i, sl in enumerate(image_stack)]
+    _check_across_slices(rays, pixel_spacing)
     labels = np.zeros(image_stack.shape, dtype=np.uint8)
     for i, sl in enumerate(image_stack):
-        sat, vat = segment_abdomen(sl, fat_ref[i], pixel_spacing)
+        if rays[i] is None:
+            continue
+        sat, vat = _labels_from_rays(sl, fat_ref[i], rays[i])
         labels[i][sat] = 1
         labels[i][vat] = 2
     return labels.transpose(1, 2, 0)

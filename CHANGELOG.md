@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-08: Abdominal segmentation: SAT/VAT boundary fixes
+
+All changes are in `mriFat/abd_seg.py` (abdomen mode). Thigh mode is unchanged.
+
+Found by segmenting both abdominal scans of the five `rawAbd` cases (`AbdoCompL3` and `T12S1…DIXON VIBE`) and comparing them over the range they both cover: in `03260016NHCTHO`, about 300 cm³ moved between SAT and VAT although the total fat agreed, because the SAT/VAT boundary rays stopped inside the SAT.
+
+- **Rays pass grey fascia lines on the flanks and back.** Outside ±60° of the front midline, only dark pixels (below 20% of the fat signal, i.e. muscle; `DARK_FRACTION`) count as a gap in the SAT run. Thin fascia lines inside thick SAT, which show up as grey gaps on the sharper `AbdoCompL3` scan, used to stop the rays there, and the deep SAT layer was counted as VAT. At the front the old rule stays, because the muscle wall and bowel there can be grey too.
+- **Dips are bridged all around the body.** A sharp drop in SAT thickness that returns within 20 rays (a ray stopped too early) is now interpolated on the flanks and back too, not only at the front. Sharp bumps are still only bridged at the front, because thick fat pads on the flanks and pelvis are real. The bridging code also no longer indexes past the end of the ray array.
+- **Across-slice check.** Each ray's SAT thickness is compared with the same ray on the 3 slices above and below; a ray much thinner than there (below 75% of their median, minus 2 mm) takes their median. This repairs wide VAT wedges cutting through the SAT ring on one or two slices, including at the first and last slices of a scan (`XSLICE_WINDOW`, `XSLICE_THIN`, `XSLICE_ABS_MM`).
+- **Code structure:** `segment_abdomen_stack()` now measures the rays on all slices, checks them across slices, then builds the labels. `segment_abdomen()` (one slice) and `fat_reference()` work as before.
+
+**Agreement between the two scans** over their common range (T12 − L3, as % of the mean of the two):
+
+| Case | SAT before | SAT now | VAT before | VAT now |
+|---|---|---|---|---|
+| 03260014NHCLE | +0.2% | −0.0% | +1.9% | +2.4% |
+| 03260016NHCTHO | +7.9% | +5.8% | −7.9% | −5.8% |
+| 05250002NHCNSA | −1.0% | −1.2% | +1.3% | +2.2% |
+| 09260021NHCSSB | −0.2% | −0.2% | +6.5% | +6.5% |
+| 09260024NHCYCM | −0.4% | −0.1% | +1.4% | +1.1% |
+| **Mean of the absolute values** | **1.9%** | **1.5%** | **3.8%** | **3.6%** |
+
+**Tested and not adopted** (each also moved real fat to the wrong side, or made agreement worse): SAT = largest fat piece with everything inside it VAT (VAT and SAT are usually connected through gaps in the muscle wall); a wider gap tolerance on the flanks (crossed the thin muscle between the ribs); smoothing the image before finding the boundary; moving separate small SAT pieces to VAT; moving small VAT pieces next to SAT, or VAT within a few mm of SAT, to SAT (also moved real VAT next to the pelvic and back muscles); a partial-volume VAT volume.
+
+**Known issue:** a thin strip of SAT just under the posterior muscle wall can still be labelled VAT on some slices (e.g. `03260016NHCTHO` T12S1 slice 32). Correct it with the brush tool.
+
 ## 2026-10-07: Thigh segmentation: hip-end fix, T1 TSE support, IMAT check
 
 All changes are in thigh mode. Abdomen mode (`abd_seg.py`) is unchanged.
