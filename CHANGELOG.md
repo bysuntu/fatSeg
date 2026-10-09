@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-09: Abdomen: "VAT Fat Fraction" slider replaces "Segmentation Threshold"
+
+- **GUI:** in abdomen mode the **Segmentation Threshold** box (a raw value, default 100) is replaced by a **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40): a pixel inside the SAT boundary counts as VAT when its signal is at least this share of the slice's fat signal. It changes VAT only; SAT and the SAT/VAT boundary always use 0.4 (`FAT_FRACTION`). The old box only fed the first pass that measures the fat signal and had little effect. The slider is shown in abdomen mode only and hidden in thigh mode, where nothing uses it. Releasing the slider (or an arrow key) relabels VAT with the new value straight away (about 3 s instead of a full SAT/AVT Seg, same result), reusing the last SAT/VAT boundary; it asks first if the segmentation was edited by hand or loaded since.
+- **`mriFat/abd_seg.py`:** `segment_abdomen_stack()` takes a `vat_fraction` argument (default `FAT_FRACTION` = 0.4), used only for the VAT pixels. The raw first-pass threshold is now the module setting `FIRST_PASS_THRESHOLD` = 100 and the default of `threshold`. `segment_abdomen_stack(..., return_state=True)` also returns the fat signal and boundary, and the new `relabel_vat()` recomputes the labels from them with another VAT fat fraction. With the defaults the results are unchanged (checked bit for bit). The console line shows the SAT and VAT fat fractions and thresholds.
+
 ## 2026-10-09: STL export for the abdominal scans; `compare_overlap.py` handles tilted scans
 
 - **New `make_abd_stl.py`.** Segments every abdominal scan with `abd_seg.py` (current `BOUNDARY`) and writes SAT and VAT surfaces as binary STL in patient coordinates (mm), so both scans of a case open aligned in ParaView: `<out>/<case>/{L3,T12}_{SAT,VAT}.stl`, `_overlap` versions cut to the region the other scan covers, and `segmentation_volumes.csv`. SAT meshes match the voxel volume within 0.3%; the light smoothing makes VAT meshes 1–7% smaller (thin strands), so take volumes from the CSV's voxel column. `abd_stl/` is in `.gitignore` (folder names are patient IDs).

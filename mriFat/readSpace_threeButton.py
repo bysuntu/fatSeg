@@ -15,7 +15,7 @@ from t1_seg import segment_stack as _segment_stack_t1
 import dixon_local_imat  # dixon_local_imat (optional IMAT check for Dixon)
 
 
-from abd_seg import segment_abdomen_stack
+from abd_seg import segment_abdomen_stack, relabel_vat
 
 class ThreeButtonSlider(tk.Frame):
     def __init__(self, master, min_val=0, max_val=100, initial_min=20, initial_current=50, initial_max=80, width=300, height=50, parent=None):
@@ -309,7 +309,7 @@ class DicomViewerApp:
         self.root.configure(background='black')
         self.click_state = 1  # Start with SAT mode (state 1)
         self.threshold = 0
-        self.segmentation_threshold = 100
+        self.fat_fraction = 0.4   # abdomen: VAT fat threshold as a fraction of the measured fat signal (SAT is fixed)
         self.ai_seg_active = False
         self.cache = None
         self.dicom_long_info = None
@@ -317,6 +317,8 @@ class DicomViewerApp:
         self.dicom_short_info = None
         self.dicom_short_pixels = None
         self.short_sequence = None  # 'DIXON_F' or 'T1_TSE', set when short axis slices are loaded
+        self.abd_state = None       # abdomen: fat signal + SAT/VAT boundary of the last SAT/AVT Seg (for VAT relabelling)
+        self.abd_labels = None      # abdomen: the labels that SAT/AVT Seg (or the last relabelling) produced
         self.after_id = None  # To store after callback ID
         self.flip_axes = False  # Track whether axes are flipped
         
@@ -357,7 +359,7 @@ class DicomViewerApp:
         self.left_bottom_frame.pack_propagate(False)
 
         # Threshold input frame
-        self.threshold_frame = tk.Frame(left_frame, bg="#FFF8DC", width=180, height=60)
+        self.threshold_frame = tk.Frame(left_frame, bg="#FFF8DC", width=180, height=80)
         self.threshold_frame.pack(padx=5, pady=5)
         self.threshold_frame.pack_propagate(False)
 
@@ -375,16 +377,19 @@ class DicomViewerApp:
         self.swap_xy_button = tk.Button(self.left_mid_frame, text="Swap XY", command=self.swap_xy_segmentation, bg="#555555", fg="white", width=16)
         self.combined_seg_button = tk.Button(self.left_mid_frame, text="Combined", command=self.combined_seg_mode, bg="#8B4513", fg="white", width=16)
 
-        # Threshold input widgets
-        threshold_label = tk.Label(self.threshold_frame, text="Segmentation Threshold:", bg="#FFF8DC", font=("Arial", 9))
-        threshold_label.pack(pady=(5, 2))
+        # VAT fat fraction slider (abdomen): a pixel inside the SAT boundary is VAT if its signal is at
+        # least this share of the fat signal. SAT always uses abd_seg.FAT_FRACTION.
+        threshold_label = tk.Label(self.threshold_frame, text="VAT Fat Fraction:", bg="#FFF8DC", font=("Arial", 9))
+        threshold_label.pack(pady=(3, 0))
 
-        # Create StringVar to trace changes
-        self.threshold_var = tk.StringVar(value="100")
-        self.threshold_var.trace_add('write', self.update_threshold_auto)
-
-        self.threshold_entry = tk.Entry(self.threshold_frame, width=10, justify='center', textvariable=self.threshold_var)
-        self.threshold_entry.pack(pady=(0, 5))
+        self.threshold_var = tk.DoubleVar(value=self.fat_fraction)
+        self.threshold_scale = tk.Scale(self.threshold_frame, from_=0.20, to=0.60, resolution=0.01, orient=tk.HORIZONTAL,
+                                        variable=self.threshold_var, command=self.update_threshold_auto, length=160,
+                                        bg="#FFF8DC", highlightthickness=0, font=("Arial", 8))
+        self.threshold_scale.pack(pady=(0, 3))
+        # VAT is relabelled when the slider is released (or after an arrow key), not while dragging
+        self.threshold_scale.bind('<ButtonRelease-1>', self.apply_vat_fraction)
+        self.threshold_scale.bind('<KeyRelease>', self.apply_vat_fraction)
 
         # Right frame
         right_frame = tk.Frame(main_frame)
@@ -479,6 +484,7 @@ class DicomViewerApp:
             self.switch_button.config(image=self.sat_img)
             self.click_state = 1
             self.auto_seg_button.pack(pady=5)
+            self.threshold_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # VAT Fat Fraction: abdomen only
         elif self.click_state == 1:
             self.switch_button.config(image=self.thigh_img)
             self.click_state = 2
@@ -488,6 +494,7 @@ class DicomViewerApp:
             self.combined_seg_button.pack(pady=5)
             self.swap_xy_button.pack(pady=5)
             self.auto_seg_button.pack_forget()
+            self.threshold_frame.pack_forget()   # VAT Fat Fraction is not used in thigh mode
         else:
             self.switch_button.config(image=self.sat_img)
             self.click_state = 1
@@ -497,6 +504,7 @@ class DicomViewerApp:
             self.combined_seg_button.pack_forget()
             self.swap_xy_button.pack_forget()
             self.auto_seg_button.pack(pady=5)
+            self.threshold_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # VAT Fat Fraction: abdomen only
 
     def flip_xy_axes(self):
         """Flip X and Y axes of the segmentation only."""
@@ -558,6 +566,7 @@ class DicomViewerApp:
                     self.dicom_short_pixels, self.dicom_short_info = pixels, info
                     self.short_sequence = 'T1_TSE'
             self.image_stack = np.array(self.dicom_short_pixels)
+            self.abd_state = self.abd_labels = None   # boundary of a previous stack no longer applies
             # print('image stack shape: ', self.image_stack.shape)
             self.min_crop = 0
             self.max_crop = self.image_stack.shape[0] - 1
@@ -617,30 +626,39 @@ class DicomViewerApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save segmentation: {str(e)}")
     
-    def update_threshold_auto(self, *args):
-        """Update the segmentation threshold automatically as the user types."""
-        try:
-            value = self.threshold_var.get()
-            if value == "" or value == "-":
-                # Allow empty string or just minus sign while typing
-                return
-            new_threshold = int(value)
-            if new_threshold < 0:
-                # Don't update if negative, but allow typing to continue
-                return
-            self.segmentation_threshold = new_threshold
-            print(f"Segmentation threshold updated to: {self.segmentation_threshold}")
-        except ValueError:
-            # Ignore invalid input while typing
-            pass
+    def update_threshold_auto(self, value):
+        """Keep the VAT fat fraction in step with the slider (VAT is relabelled on release)."""
+        self.fat_fraction = round(float(value), 2)
 
     def auto_segment(self):
         if not hasattr(self, 'image_stack'):
             messagebox.showwarning("Warning", "No image stack loaded.")
             return
         pixel_spacing = float(self.dicom_short_info[0][4][0])
-        self.segmentation = segment_abdomen_stack(self.image_stack, self.segmentation_threshold, pixel_spacing)
+        self.segmentation, self.abd_state = segment_abdomen_stack(
+            self.image_stack, pixel_spacing=pixel_spacing, vat_fraction=self.fat_fraction, return_state=True)
+        self.abd_labels = self.segmentation.copy()
+        self.abd_state_fraction = self.fat_fraction
         self.ai_seg_active = False
+        self.update_image_slice()
+        self.update_fat_plot()
+
+    def apply_vat_fraction(self, event=None):
+        """Relabel VAT with the current VAT Fat Fraction, reusing the last SAT/AVT Seg boundary."""
+        if self.click_state != 1 or self.abd_state is None or not hasattr(self, 'image_stack'):
+            return
+        if self.fat_fraction == getattr(self, 'abd_state_fraction', None):
+            return
+        current = getattr(self, 'segmentation', None)
+        if current is not None and self.abd_labels is not None and not np.array_equal(current, self.abd_labels):
+            if not messagebox.askyesno("VAT Fat Fraction",
+                                       "The segmentation was edited or loaded since SAT/AVT Seg.\n"
+                                       "Relabel VAT with the new value and discard those changes?"):
+                return
+        self.segmentation = relabel_vat(self.image_stack, self.abd_state, self.fat_fraction)
+        self.abd_labels = self.segmentation.copy()
+        self.abd_state_fraction = self.fat_fraction
+        print(f"VAT relabelled with VAT fat fraction {self.fat_fraction}")
         self.update_image_slice()
         self.update_fat_plot()
     

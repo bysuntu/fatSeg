@@ -59,7 +59,7 @@ The image button at the top left switches modes. The **belly** icon is abdomen m
 3. Check the result with **Show Image** and correct it where needed.
 4. Save.
 
-The **Segmentation Threshold** box only drives a first pass that measures how bright fat is on each slice. Leave it at the default of 100. The threshold actually applied is printed to the console, e.g. `Abdomen: fat signal 344-411, fat threshold 138-164`.
+The **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40) sets which pixels inside the SAT boundary count as VAT: a pixel is VAT when its signal is at least this share of the slice's fat signal (the median brightness of its SAT). It does not change SAT or the SAT/VAT boundary, which always use 0.4. Lower values count more partly-fat pixels as VAT (VAT is mostly thin strands: about 9% more VAT per 0.05 step, more in lean patients). **Release the slider (or use the arrow keys) to apply a new value**: VAT is relabelled within a few seconds, reusing the SAT/VAT boundary of the last **SAT/AVT Seg**, and the image and VAT plot update. If the segmentation was edited by hand or loaded since then, you are asked before it is replaced. The slider is hidden in thigh mode. The thresholds actually applied are printed to the console, e.g. `Abdomen: fat signal 344-411; SAT fat fraction 0.4 (threshold 138-164), VAT fat fraction 0.4 (threshold 138-164)`.
 
 ### Thigh mode: SAT / IMAT / muscle
 
@@ -88,7 +88,7 @@ Saved files contain an **identity affine**: they don't carry patient geometry. A
 
 Implemented in `mriFat/abd_seg.py`, separately from the thigh code. On each axial slice (step 4 also uses the neighbouring slices):
 
-1. **Fat threshold:** set to 40% of the local fat signal (`FAT_FRACTION`). The fat signal is the median SAT intensity of the slice, smoothed over neighbouring slices. This makes volumes comparable between scans with different intensity scales and voxel sizes.
+1. **Fat threshold:** 40% of the local fat signal (`FAT_FRACTION`) for SAT and the SAT/VAT boundary; for VAT, the **VAT Fat Fraction** set in the GUI (default 0.4) times the local fat signal. The fat signal is the median SAT intensity of the slice, smoothed over neighbouring slices. This makes volumes comparable between scans with different intensity scales and voxel sizes.
 2. **Body outline:** the subcutaneous fat ring, closed over small gaps and filled. **Arms are removed**, whether they lie close to the torso or touch it.
 3. **SAT/VAT boundary:** 360 rays are cast from the body centre. On each ray, SAT is the run of fat from the skin inward up to the muscle wall. Gaps of up to 2 mm are tolerated (`GAP_TOL_MM`).
 4. **Correction of faulty rays:**
