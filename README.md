@@ -56,8 +56,9 @@ The image button at the top left switches modes. The **belly** icon is abdomen m
 
 1. Load the short-axis slices (a series ending in `_F`).
 2. Click **SAT/AVT Seg**.
-3. Check the result with **Show Image** and correct it where needed.
-4. Save.
+3. Optionally adjust VAT with the **VAT Fat Fraction** slider (see below).
+4. Check the result with **Show Image** and correct it where needed.
+5. Save.
 
 The **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40) sets which pixels inside the SAT boundary count as VAT: a pixel is VAT when its signal is at least this share of the slice's fat signal (the median brightness of its SAT). It does not change SAT or the SAT/VAT boundary, which always use 0.4. Lower values count more partly-fat pixels as VAT (VAT is mostly thin strands: about 9% more VAT per 0.05 step, more in lean patients). **Release the slider (or use the arrow keys) to apply a new value**: VAT is relabelled within a few seconds, reusing the SAT/VAT boundary of the last **SAT/AVT Seg**, and the image and VAT plot update. If the segmentation was edited by hand or loaded since then, you are asked before it is replaced. The slider is hidden in thigh mode. The thresholds actually applied are printed to the console, e.g. `Abdomen: fat signal 344-411; SAT fat fraction 0.4 (threshold 138-164), VAT fat fraction 0.4 (threshold 138-164)`.
 
