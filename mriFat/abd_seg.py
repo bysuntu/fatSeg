@@ -17,11 +17,7 @@ Idea (adapted from the thigh method):
      off at the narrow contact (watershed on the distance to the body outline).
   3. Cast rays from the body centre. On each ray, SAT is the run of fat that starts
      at the skin and ends at the first non-fat gap (the abdominal muscle wall); gaps up to
-     GAP_TOL_MM are tolerated. On the flanks and back (outside FRONT_HALF_DEG of the
-     anterior midline) only dark pixels (below DARK_FRACTION of the fat signal, i.e.
-     muscle) count towards the gap: grey fascia lines inside thick SAT would otherwise stop
-     the run early on sharp scans. At the front every non-fat pixel counts, since the
-     muscle wall and bowel there can be grey too.
+     GAP_TOL_MM are tolerated.
   4. Rays that disagree with their neighbours (bridges into VAT make them too thick;
      vessels or the navel crease inside SAT make them too thin) are replaced by the
      median of neighbouring rays.
@@ -37,6 +33,19 @@ Idea (adapted from the thigh method):
      (XSLICE_WINDOW on each side): a ray much thinner than there (a wide wedge of VAT
      cutting into SAT on one or two slices) takes their median thickness, since real
      anatomy changes gradually along the body.
+     BOUNDARY selects how the SAT inner edge is found (3-4 are the 'rays' method):
+       'rays'     as above (default).
+       'path'     the best closed path around the body (dynamic programming on the image
+                  unwrapped around the body centre): each candidate edge scores fat on its
+                  outer side minus a dark band on its inner side (PATH_OUT_MM / PATH_IN_MM;
+                  a thick muscle wall scores high, a thin fascia line low), minus the darkness
+                  crossed from the skin (PATH_MU per mm), minus thickness changes between
+                  neighbouring rays (PATH_GAMMA per mm). One continuous boundary, so a fascia
+                  line cannot stop it locally; it sits ~1 px shallower than the rays, hence
+                  PATH_OFFSET_PX.
+       'combined' the ray result, except where a ray is more than COMBINE_TOL_MM thinner than
+                  the path (the ray stopped early): there the path is used. Keeps the rays'
+                  pixel-accurate edge and the path's protection against early stops.
   5. Every fat pixel in the body is either SAT or VAT:
      SAT = fat outside the SAT inner edge, VAT = fat inside it.
   6. Bone marrow is not VAT: the vertebral body (a round, mid-intensity region on the
@@ -59,15 +68,20 @@ JUMP_TOL = 0.15        # thickness change between adjacent rays counted as a sha
 MAX_PLATEAU = 20       # rays; widest jump-and-return segment that is bridged
 GAP_TOL_MM = 2.0       # mm of non-fat tolerated inside the SAT run (noise); in mm so that
                        # thin muscle wall is not skipped on coarse scans
-DARK_FRACTION = 0.2    # flanks and back: only pixels below this share of the fat signal count
-                       # towards the gap (muscle); grey fascia lines inside SAT are passed
-FRONT_HALF_DEG = 60    # degrees either side of the anterior midline where every non-fat
-                       # pixel counts (grey muscle wall and bowel at the front)
 ANTERIOR_SECTOR = 45   # degrees either side of the anterior midline where thick bumps are
                        # bridged too (thin dips are bridged all around)
 XSLICE_WINDOW = 3      # slices on each side used to check each ray across slices
 XSLICE_THIN = 0.75     # a ray is too thin if below this share of the neighbouring slices'
 XSLICE_ABS_MM = 2.0    # median thickness, minus this many mm
+BOUNDARY = 'combined'      # 'rays', 'path' or 'combined' (see step 4 above)
+PATH_OUT_MM = 2.0      # path: fat window outside the candidate edge
+PATH_IN_MM = 4.0       # path: dark window inside it (thicker than a fascia line)
+PATH_MU = 0.05         # path: cost per mm of darkness crossed between skin and edge
+PATH_GAMMA = 0.05      # path: cost per mm of thickness change between neighbouring rays
+PATH_MAX_JUMP_MM = 12  # path: largest thickness change between neighbouring rays
+PATH_MAX_FRAC = 0.75   # path: SAT thickness at most this share of the skin radius
+PATH_OFFSET_PX = 2.0   # path: move the edge this many px deeper (it sits mid-transition)
+COMBINE_TOL_MM = 8.0   # combined: use the path where the ray is this much thinner than it
 MIN_SIZE = 10          # px; smaller fat specks are dropped
 OUTSIDE_KEEP = 0.5     # fat pieces with less than this share inside the torso zone are dropped
 TORSO_MARGIN_MM = 10   # torso zone = within ARM_CORE_MM + this of the torso core
@@ -201,11 +215,8 @@ def _polygon_mask(center, radii, angles, shape):
     return mask
 
 
-def _sat_rays(fat, dark, body, center, pixel_spacing):
-    """Skin radius and corrected SAT thickness (pixels) on each ray, and the ray angles.
-
-    `dark` marks muscle-dark pixels; on the flanks and back only these count as gap.
-    """
+def _sat_rays(fat, body, center, pixel_spacing):
+    """Skin radius and corrected SAT thickness (pixels) on each ray, and the ray angles."""
     h, w = fat.shape
     step = 0.5
     radii = np.arange(0, np.hypot(h, w), step)
@@ -215,8 +226,6 @@ def _sat_rays(fat, dark, body, center, pixel_spacing):
     gap_steps = int(round(GAP_TOL_MM / pixel_spacing / step))
 
     for k, a in enumerate(angles):
-        # Anterior midline is angle 3*pi/2 (smaller row = anterior)
-        front = abs((np.degrees(a) - 270 + 180) % 360 - 180) <= FRONT_HALF_DEG
         rows = np.round(center[0] + radii * np.sin(a)).astype(int)
         cols = np.round(center[1] + radii * np.cos(a)).astype(int)
         valid = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
@@ -227,14 +236,13 @@ def _sat_rays(fat, dark, body, center, pixel_spacing):
         i_skin = inside[-1]
         r_skin[k] = rr[i_skin]
         on_fat = fat[rows[:i_skin + 1], cols[:i_skin + 1]]
-        on_gap = ~on_fat if front else dark[rows[:i_skin + 1], cols[:i_skin + 1]]
 
         # SAT: fat run from the skin inward, tolerating small gaps
         i_end, gap, i = i_skin, 0, i_skin
         while i >= 0:
             if on_fat[i]:
                 i_end, gap = i, 0
-            elif on_gap[i]:
+            else:
                 gap += 1
                 if gap > gap_steps:
                     break
@@ -242,6 +250,76 @@ def _sat_rays(fat, dark, body, center, pixel_spacing):
         r_sat[k] = rr[i_end] if on_fat[i_end] else r_skin[k]
 
     return r_skin, _smooth_outliers(_bridge_plateaus(r_skin - r_sat)), angles
+
+
+def _path_thickness(image, fat_ref, body, center, pixel_spacing):
+    """SAT thickness (px) on each ray from the best closed boundary path, or None."""
+    h, w = image.shape
+    step = 0.5
+    mm = step * pixel_spacing
+    radii = np.arange(0, np.hypot(h, w), step)
+    angles = np.linspace(0, 2 * np.pi, N_RAYS, endpoint=False)
+    rel = image / fat_ref
+    profiles, r_skin = [], np.zeros(N_RAYS)
+    for k, a in enumerate(angles):
+        rows = np.round(center[0] + radii * np.sin(a)).astype(int)
+        cols = np.round(center[1] + radii * np.cos(a)).astype(int)
+        valid = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+        rows, cols, rr = rows[valid], cols[valid], radii[valid]
+        inside = np.nonzero(body[rows, cols])[0]
+        if inside.size == 0:
+            profiles.append(np.zeros(1))
+            continue
+        r_skin[k] = rr[inside[-1]]
+        profiles.append(rel[rows[:inside[-1] + 1], cols[:inside[-1] + 1]][::-1])   # skin inward
+
+    # Score of every candidate thickness on every ray: fat outside, dark band inside,
+    # minus the darkness crossed from the skin
+    w_out = max(1, int(round(PATH_OUT_MM / mm)))
+    w_in = max(1, int(round(PATH_IN_MM / mm)))
+    n_t = max(len(p) for p in profiles)
+    score = np.full((N_RAYS, n_t), -np.inf)
+    for k, p in enumerate(profiles):
+        if len(p) < w_out + w_in + 2:
+            continue
+        cs = np.concatenate([[0], np.cumsum(p)])
+        crossed = np.concatenate([[0], np.cumsum(np.clip(1 - p / FAT_FRACTION, 0, 1))]) * mm
+        j = np.arange(w_out, max(w_out, min(len(p) - w_in, int(PATH_MAX_FRAC * r_skin[k] / step))))
+        if j.size:
+            score[k, j] = ((cs[j] - cs[j - w_out]) / w_out - (cs[j + w_in] - cs[j]) / w_in
+                           - PATH_MU * crossed[j])
+    if not np.isfinite(score).any():
+        return None
+
+    # Best closed path: two laps round the body, the middle lap is kept (no start/end effect)
+    max_jump = max(1, int(round(PATH_MAX_JUMP_MM / mm)))
+    order = np.concatenate([np.arange(N_RAYS), np.arange(N_RAYS)])
+    total = score[order[0]].copy()
+    back = np.zeros((len(order), n_t), np.int32)
+    idx = np.arange(n_t)
+    for t in range(1, len(order)):
+        best = np.full(n_t, -np.inf)
+        arg = np.zeros(n_t, np.int32)
+        for d in range(-max_jump, max_jump + 1):
+            shifted = np.full(n_t, -np.inf)
+            if d >= 0:
+                shifted[d:] = total[:n_t - d]
+            else:
+                shifted[:d] = total[-d:]
+            cand = shifted - PATH_GAMMA * abs(d) * mm
+            better = cand > best
+            best[better] = cand[better]
+            arg[better] = idx[better] - d
+        total = best + score[order[t]]
+        back[t] = arg
+    path = np.zeros(len(order), np.int32)
+    path[-1] = int(np.argmax(total))
+    for t in range(len(order) - 1, 0, -1):
+        path[t - 1] = back[t][path[t]]
+    keep = np.arange(N_RAYS // 2, N_RAYS // 2 + N_RAYS)
+    thick = np.zeros(N_RAYS)
+    thick[order[keep]] = path[keep] * step
+    return thick + PATH_OFFSET_PX
 
 
 def _slice_rays(image, fat_ref, pixel_spacing):
@@ -253,8 +331,14 @@ def _slice_rays(image, fat_ref, pixel_spacing):
     if body is None or not body.any():
         return None
     center = ndi.center_of_mass(body)
-    dark = image < DARK_FRACTION * fat_ref
-    r_skin, thick, angles = _sat_rays(fat, dark, body, center, pixel_spacing)
+    r_skin, thick, angles = _sat_rays(fat, body, center, pixel_spacing)
+    if BOUNDARY in ('path', 'combined'):
+        path = _path_thickness(image, fat_ref, body, center, pixel_spacing)
+        if path is not None:
+            if BOUNDARY == 'path':
+                thick = path
+            else:   # keep the ray unless it stopped well short of the path
+                thick = np.where(thick < path - COMBINE_TOL_MM / pixel_spacing, path, thick)
     return dict(fat=fat, body=body, center=center, r_skin=r_skin, thick=thick, angles=angles)
 
 

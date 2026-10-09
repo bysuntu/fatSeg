@@ -1,30 +1,61 @@
 # Changelog
 
+## 2026-10-09: STL export for the abdominal scans; `compare_overlap.py` handles tilted scans
+
+- **New `make_abd_stl.py`.** Segments every abdominal scan with `abd_seg.py` (current `BOUNDARY`) and writes SAT and VAT surfaces as binary STL in patient coordinates (mm), so both scans of a case open aligned in ParaView: `<out>/<case>/{L3,T12}_{SAT,VAT}.stl`, `_overlap` versions cut to the region the other scan covers, and `segmentation_volumes.csv`. SAT meshes match the voxel volume within 0.3%; the light smoothing makes VAT meshes 1–7% smaller (thin strands), so take volumes from the CSV's voxel column. `abd_stl/` is in `.gitignore` (folder names are patient IDs).
+- **`compare_overlap.py` handles scans tilted against each other.** It used to cut both scans between the same flat z planes. The `AbdoCompL3` slices of `03260016NHCTHO` are tilted by 3.9° against its `T12S1` scan, so near the flanks the two scans were compared over different regions. Each scan is now cut to the slab the other covers, along that scan's own slice direction, with voxels partly inside counted by the fraction inside. For two axial scans the result is unchanged. For `03260016NHCTHO` (saved segmentations) the difference goes from SAT +5.6% / VAT −3.4% to SAT −0.5% / VAT +1.8%. The output now also lists the tilt; the CSV columns `z_from` / `z_to` are renamed `slab_from` / `slab_to` (limits along the L3 slice direction) and `tilt_deg` is added.
+- **Corrections to earlier numbers:** the `03260016NHCTHO` L3-vs-T12 differences of about ±5–8% in the 2026-10-08 entry were mostly this tilt, not segmentation or breathing.
+
+## 2026-10-09: Abdominal segmentation: optional boundary path (`BOUNDARY` switch)
+
+`mriFat/abd_seg.py` has a new setting, `BOUNDARY`, for how the SAT/VAT boundary is found. The default is now `'combined'`.
+
+- **`'path'`:** the best closed boundary around the body, found by dynamic programming on the image unwrapped around the body centre. Each candidate edge scores fat on its outer side minus a dark band on its inner side, minus the darkness crossed from the skin, minus changes in thickness between neighbouring angles (`PATH_*` settings). A thin fascia line inside thick SAT cannot stop it, because the boundary must be continuous all around. It sits about 1 pixel shallower than the rays, so it is moved 2 pixels deeper (`PATH_OFFSET_PX`).
+- **`'combined'`:** the ray result, except where a ray is more than 8 mm thinner than the path (`COMBINE_TOL_MM`); there the path is used. The rays keep their pixel-accurate edge, and the path takes over where a ray stopped early.
+
+Against the hand-corrected segmentations (both `03260016NHCTHO` scans and `05250002NHCNSA` T12S1):
+
+| Setting | Dice SAT / VAT | SAT labelled VAT | VAT labelled SAT | Changed on the 5 unedited scans |
+|---|---|---|---|---|
+| `'rays'` | 0.987 / 0.979 | 424 cm³ | 51 cm³ | 11 cm³ |
+| `'path'` | 0.988 / 0.977 | 179 cm³ | 223 cm³ | 235 cm³ |
+| `'combined'` | 0.992 / 0.984 | 103 cm³ | 110 cm³ | 60 cm³ |
+
+`AbdoCompL3` vs `T12S1` agreement (mean SAT / VAT difference): `'rays'` 1.7% / 3.6%, `'path'` 1.4% / 3.2%, `'combined'` 1.4% / 3.3%.
+
+`'combined'` is the default. It was tuned and checked on only 3 hand-corrected scans; on the 5 unedited scans it changes the volumes by at most 0.7%.
+
 ## 2026-10-08: Abdominal segmentation: SAT/VAT boundary fixes
 
 All changes are in `mriFat/abd_seg.py` (abdomen mode). Thigh mode is unchanged.
 
-Found by segmenting both abdominal scans of the five `rawAbd` cases (`AbdoCompL3` and `T12S1…DIXON VIBE`) and comparing them over the range they both cover: in `03260016NHCTHO`, about 300 cm³ moved between SAT and VAT although the total fat agreed, because the SAT/VAT boundary rays stopped inside the SAT.
+The SAT/VAT boundary rays sometimes stop inside the SAT, so part of it is counted as VAT. This shows as a wedge of VAT cutting into the SAT ring, or a deep layer of SAT behind a fascia line counted as VAT. In `03260016NHCTHO`, about 300 cm³ moved between SAT and VAT between its two scans although the total fat agreed.
 
-- **Rays pass grey fascia lines on the flanks and back.** Outside ±60° of the front midline, only dark pixels (below 20% of the fat signal, i.e. muscle; `DARK_FRACTION`) count as a gap in the SAT run. Thin fascia lines inside thick SAT, which show up as grey gaps on the sharper `AbdoCompL3` scan, used to stop the rays there, and the deep SAT layer was counted as VAT. At the front the old rule stays, because the muscle wall and bowel there can be grey too.
 - **Dips are bridged all around the body.** A sharp drop in SAT thickness that returns within 20 rays (a ray stopped too early) is now interpolated on the flanks and back too, not only at the front. Sharp bumps are still only bridged at the front, because thick fat pads on the flanks and pelvis are real. The bridging code also no longer indexes past the end of the ray array.
 - **Across-slice check.** Each ray's SAT thickness is compared with the same ray on the 3 slices above and below; a ray much thinner than there (below 75% of their median, minus 2 mm) takes their median. This repairs wide VAT wedges cutting through the SAT ring on one or two slices, including at the first and last slices of a scan (`XSLICE_WINDOW`, `XSLICE_THIN`, `XSLICE_ABS_MM`).
 - **Code structure:** `segment_abdomen_stack()` now measures the rays on all slices, checks them across slices, then builds the labels. `segment_abdomen()` (one slice) and `fat_reference()` work as before.
 
-**Agreement between the two scans** over their common range (T12 − L3, as % of the mean of the two):
+**Against the hand-corrected segmentations** (the `seg.nii.gz` files in `rawAbd`, 10 scans; 5 of them were corrected by hand, the other 5 are unedited output of the previous version):
 
-| Case | SAT before | SAT now | VAT before | VAT now |
-|---|---|---|---|---|
-| 03260014NHCLE | +0.2% | −0.0% | +1.9% | +2.4% |
-| 03260016NHCTHO | +7.9% | +5.8% | −7.9% | −5.8% |
-| 05250002NHCNSA | −1.0% | −1.2% | +1.3% | +2.2% |
-| 09260021NHCSSB | −0.2% | −0.2% | +6.5% | +6.5% |
-| 09260024NHCYCM | −0.4% | −0.1% | +1.4% | +1.1% |
-| **Mean of the absolute values** | **1.9%** | **1.5%** | **3.8%** | **3.6%** |
+| | Dice SAT | Dice VAT | SAT labelled VAT | VAT labelled SAT | Mean volume error SAT / VAT |
+|---|---|---|---|---|---|
+| Before | 0.9892 | 0.9653 | 847 cm³ | 30 cm³ | 1.84% / 5.01% |
+| Now | 0.9902 | 0.9664 | 615 cm³ | 63 cm³ | 1.54% / 4.67% |
 
-**Tested and not adopted** (each also moved real fat to the wrong side, or made agreement worse): SAT = largest fat piece with everything inside it VAT (VAT and SAT are usually connected through gaps in the muscle wall); a wider gap tolerance on the flanks (crossed the thin muscle between the ribs); smoothing the image before finding the boundary; moving separate small SAT pieces to VAT; moving small VAT pieces next to SAT, or VAT within a few mm of SAT, to SAT (also moved real VAT next to the pelvic and back muscles); a partial-volume VAT volume.
+On the 5 unedited scans the result changes by at most 2 cm³ per scan.
 
-**Known issue:** a thin strip of SAT just under the posterior muscle wall can still be labelled VAT on some slices (e.g. `03260016NHCTHO` T12S1 slice 32). Correct it with the brush tool.
+**Agreement between the two scans** (`AbdoCompL3` vs `T12S1…DIXON VIBE` over their common range): mean difference SAT 1.9% → 1.7%, VAT 3.8% → 3.6%; `03260016NHCTHO` ±7.9% → ±6.7%.
+
+**Tested and not adopted:**
+- **Letting rays pass grey pixels on the flanks and back,** stopping only at dark (muscle) pixels. It fixed the SAT behind fascia lines, but pushed 200–500 cm³ of real VAT into SAT over the 10 corrected scans, and had the worst Dice.
+- **A wider gap tolerance on the flanks,** which crossed the thin muscle between the ribs.
+- **SAT = the largest fat piece, with everything inside it VAT.** VAT and SAT are usually connected through gaps in the muscle wall.
+- **Smoothing the image before finding the boundary.**
+- **Moving SAT pieces separate from the ring to VAT.** The large ones are real SAT split off by a VAT wedge.
+- **Moving small VAT pieces next to SAT, or VAT within a few mm of SAT, to SAT.** This also moved real VAT next to the pelvic and back muscles.
+- **A partial-volume VAT volume.**
+
+**Known issue:** SAT behind a fascia line on the flanks and back can still be labelled VAT (about 615 cm³ over the 10 corrected scans). Correct it with the brush tool.
 
 ## 2026-10-07: Thigh segmentation: hip-end fix, T1 TSE support, IMAT check
 

@@ -90,7 +90,7 @@ Implemented in `mriFat/abd_seg.py`, separately from the thigh code. On each axia
 
 1. **Fat threshold:** set to 40% of the local fat signal (`FAT_FRACTION`). The fat signal is the median SAT intensity of the slice, smoothed over neighbouring slices. This makes volumes comparable between scans with different intensity scales and voxel sizes.
 2. **Body outline:** the subcutaneous fat ring, closed over small gaps and filled. **Arms are removed**, whether they lie close to the torso or touch it.
-3. **SAT/VAT boundary:** 360 rays are cast from the body centre. On each ray, SAT is the run of fat from the skin inward up to the muscle wall. Gaps of up to 2 mm are tolerated (`GAP_TOL_MM`). On the flanks and back (outside ±60° of the front midline), only dark pixels, below 20% of the fat signal (`DARK_FRACTION`), count as a gap: that is muscle, while the grey fascia lines that run through thick SAT do not stop the ray. At the front every non-fat pixel counts, because the muscle wall and bowel there can be grey too.
+3. **SAT/VAT boundary:** 360 rays are cast from the body centre. On each ray, SAT is the run of fat from the skin inward up to the muscle wall. Gaps of up to 2 mm are tolerated (`GAP_TOL_MM`).
 4. **Correction of faulty rays:**
    - Rays that disagree with their neighbours on the same slice are replaced by the local median (fat bridging into VAT, or vessels and the navel crease inside the SAT).
    - A sharp dip in SAT thickness that returns within 20 rays (a ray stopped too early) is bridged by interpolation all around the body. A sharp bump that returns is bridged only at the front (±45°, e.g. along the linea alba), because thick fat pads on the flanks and pelvis are real.
@@ -98,6 +98,24 @@ Implemented in `mriFat/abd_seg.py`, separately from the thigh code. On each axia
 5. **Labelling:** fat outside the boundary is SAT, fat inside is VAT. Fat inside the vertebral body (marrow) is left unlabelled.
 
 The tunable settings are at the top of `abd_seg.py`.
+
+**Boundary method switch (`BOUNDARY` in `abd_seg.py`):** the SAT/VAT boundary can be found in three ways.
+
+| Setting | How the boundary is found |
+|---|---|
+| `'rays'` | Steps 3–4 above. |
+| `'path'` | The best closed path around the body, found by dynamic programming on the image unwrapped around the body centre. Each candidate edge scores fat on its outer side minus a dark band on its inner side (a thick muscle wall scores high, a thin fascia line low), minus the darkness crossed from the skin, minus changes in thickness between neighbouring angles. Because it is one continuous boundary, a fascia line cannot stop it locally. |
+| `'combined'` (default) | The ray result, except where a ray is more than 8 mm thinner than the path (the ray stopped early); there the path is used. |
+
+Against the hand-corrected `rawAbd` files (both `03260016NHCTHO` scans and `05250002NHCNSA` T12S1):
+
+| Setting | Dice SAT / VAT | SAT labelled VAT | VAT labelled SAT |
+|---|---|---|---|
+| `'rays'` | 0.987 / 0.979 | 424 cm³ | 51 cm³ |
+| `'path'` | 0.988 / 0.977 | 179 cm³ | 223 cm³ |
+| `'combined'` | **0.992 / 0.984** | 103 cm³ | 110 cm³ |
+
+`'combined'` halves the mislabelled fat and is the default. It was tuned and checked on only 3 hand-corrected scans; on the 5 unedited ones it changes the volumes by at most 0.7%. With it, `AbdoCompL3` and `T12S1…DIXON VIBE` agree over their common region within 0.9% for SAT and 2.1% for VAT on average (five cases).
 
 ## How the thigh segmentation works
 
@@ -153,7 +171,8 @@ T1 SAT is consistently a little lower because fewer partly-fat voxels at the ski
 
 | Script | Purpose |
 |---|---|
-| `compare_overlap.py` | Compares SAT/VAT volumes between the `AbdoCompL3` and `T12S1…DIXON VIBE` scans of each case over their common z range (scanner coordinates, partial slices counted fractionally). Reads the `seg.nii.gz` saved in each series folder. `python compare_overlap.py <root> [--csv out.csv]` |
+| `compare_overlap.py` | Compares SAT/VAT volumes between the `AbdoCompL3` and `T12S1…DIXON VIBE` scans of each case over the region both cover (scanner coordinates). Each scan is cut to the slab the other covers, along that scan's own slice direction, so scans tilted against each other are compared over the same region; voxels partly inside count by the fraction inside. Reads the `seg.nii.gz` saved in each series folder. `python compare_overlap.py <root> [--csv out.csv]` |
+| `make_abd_stl.py` | Segments every abdominal scan with `abd_seg.py` (current `BOUNDARY`) and writes SAT and VAT surfaces as binary STL in patient coordinates (mm), for ParaView: `<out>/<case>/{L3,T12}_{SAT,VAT}.stl`, plus `_overlap` versions cut to the slab the other scan covers (along its own slice direction, so tilted scans are handled) and `segmentation_volumes.csv`. `python make_abd_stl.py <root> [--out abd_stl] [--smooth 0.7]`. Volumes should be taken from the CSV's voxel column: smoothing makes the meshes of thin VAT strands 1–7% smaller. |
 | `finetune.py` | Fine-tunes the thigh U-Net on `thighFat/<case>/img.nii.gz` + `seg.nii.gz`. Writes `unet_thighfat_finetuned.keras`. |
 | `calBlock.py` | Prints label volumes for a folder of thigh segmentations (hard-coded path and voxel size). |
 | `test_display.py` | Debugging script for AI Seg orientation (hard-coded paths). |
@@ -178,8 +197,8 @@ T1 SAT is consistently a little lower because fewer partly-fat voxels at the ski
 
 - **Orientation:** vertebra detection in abdomen mode assumes the standard axial view, with the front of the body at the top of the image.
 - **Arms and open rings:** if the SAT ring is open and an arm also touches the torso on the same slice, that arm isn't removed.
-- **Thin VAT in lean patients:** VAT in lean patients is mostly thin strands, which are sensitive to resolution. Between `AbdoCompL3` and `T12S1…DIXON VIBE` over their common range, VAT differs by 1.1–6.5% on the five test cases (SAT by 0.0–5.8%).
-- **SAT/VAT boundary in the back corners:** where thick SAT meets the posterior muscles, a thin strip of SAT just under the muscle wall can still be labelled VAT on some slices (e.g. `03260016NHCTHO`), more often on the coarser `T12S1` scan. Correct it with the brush tool. Simple rules tested to remove it (largest fat piece as SAT, small VAT pieces next to SAT turned into SAT, VAT within a few mm of SAT turned into SAT) also moved real VAT and were not adopted.
+- **Thin VAT in lean patients:** VAT in lean patients is mostly thin strands, which are sensitive to resolution. Between `AbdoCompL3` and `T12S1…DIXON VIBE` over their common region, VAT differs by 0.2–6.5% on the five test cases (SAT by 0.3–1.7%); the largest VAT difference is the leanest patient (`09260021NHCSSB`).
+- **SAT counted as VAT behind fascia lines:** in thick SAT on the flanks and back, a thin dark fascia line can stop a SAT ray, so the deep SAT layer behind it is labelled VAT (e.g. `03260016NHCTHO`). With `BOUNDARY = 'combined'` (default) about 100 cm³ remains over the 3 hand-corrected scans (424 cm³ with `'rays'`); correct the rest with the brush tool. Rules tested to remove it (letting rays pass grey pixels on the flanks, a wider gap tolerance, largest fat piece as SAT, VAT next to SAT turned into SAT) moved real VAT into SAT and were not adopted.
 - **Thigh Seg near the hip:** where the skin line between the legs is too faint to cut along, a piece of the other leg can still be counted as SAT on the top few slices (seen in 1 of 11 `thighFat` cases).
 - **Thigh Seg tuning:** the Dixon hip-end settings were tuned on the same 11 `thighFat` cases they were checked on, and those labels were made by correcting this method's own output. The T1 settings were checked against the Dixon method, not against hand-corrected T1 labels.
 - **T1 TSE:** AI Seg and Combined are not available (the U-Net was trained on Dixon fat images only).
