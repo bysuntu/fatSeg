@@ -8,6 +8,11 @@
 - **Loading another series** clears the previous segmentation. It used to stay: with fewer slices the area plot failed ("list index out of range"), with more it showed the old curves. A seg file whose slice count doesn't match the images is reported in the plot title.
 - **Area plot:** the y-axis now also fits the blue curve (thigh muscle was cut off at the top).
 - **Polygon tool:** applying a polygon is now immediate (was a pixel-by-pixel loop, seconds on 512×512 slices); same result.
+- **Polygon and Brush buttons:**
+  - **Icons:** the buttons show their icons again. They were looked up one folder above the folder the app was started from, so with `runFat.bat` they showed "Polygon" / "Brush" text. The icons (also `sat.png`, `thigh.png`) are now found next to `mriFat\` whatever the start folder.
+  - **Polygon button:** clicking it starts a new polygon in the current colour; before, nothing happened until a colour button was clicked as well.
+  - **Flipped segmentations:** after **Flip Seg X/Y**, polygons were applied transposed (and failed on non-square images), and brush strokes landed at mirrored positions on square images. Both tools now edit the pixels under the cursor, as the popup shows them.
+  - **Brush:** paints the whole stroke between mouse positions as a round brush (it used to paint separate squares, leaving gaps when the mouse moved fast). It reaches the image edge, and the drawn stroke is as wide as the painted area. It is also instant instead of a per-pixel loop.
 - **Show Image** without loaded slices shows a warning instead of failing (typo `showwarningcerr`).
 - **`requirements.txt`: PyWavelets added.** The T1 thigh method's noise estimate (`skimage.restoration.estimate_sigma`) needs it; without it **Thigh Seg on T1 TSE failed** in a fresh installation. Run `pip install -r requirements.txt` again to get it.
 

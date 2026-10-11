@@ -20,6 +20,14 @@ import parallel
 
 from abd_seg import segment_abdomen_stack, relabel_vat
 
+# The GUI icons (sat.png, thigh.png, polygon.png, brush.png) sit in the project folder,
+# one level above this file, wherever the app is started from
+ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
+
+
+def load_icon(name, size):
+    return ImageTk.PhotoImage(Image.open(os.path.join(ICON_DIR, name)).resize((size, size), Image.Resampling.LANCZOS))
+
 class ThreeButtonSlider(tk.Frame):
     def __init__(self, master, min_val=0, max_val=100, initial_min=20, initial_current=50, initial_max=80, width=300, height=50, parent=None):
         super().__init__(master)
@@ -341,8 +349,8 @@ class DicomViewerApp:
         
         # Load images
         try:
-            self.sat_img = ImageTk.PhotoImage(Image.open("sat.png").resize((180, 180), Image.Resampling.LANCZOS))
-            self.thigh_img = ImageTk.PhotoImage(Image.open("thigh.png").resize((180, 180), Image.Resampling.LANCZOS))
+            self.sat_img = load_icon("sat.png", 180)
+            self.thigh_img = load_icon("thigh.png", 180)
         except Exception as e:
             # print(f"Error loading images: {str(e)}")
             self.sat_img = self.thigh_img = None
@@ -1276,9 +1284,9 @@ class DicomViewerApp:
         button_frame.place(relx=0.05, rely=0.05, anchor=tk.NW)
 
         try:
-            polygon_img = ImageTk.PhotoImage(Image.open("../polygon.png").resize((30, 30), Image.Resampling.LANCZOS))
-            brush_img = ImageTk.PhotoImage(Image.open("../brush.png").resize((30, 30), Image.Resampling.LANCZOS))
-        except:
+            polygon_img = load_icon("polygon.png", 30)
+            brush_img = load_icon("brush.png", 30)
+        except Exception:
             polygon_img = None
             brush_img = None
 
@@ -1387,6 +1395,10 @@ class DicomViewerApp:
             self.drawing = False
             self.last_x = None
             self.last_y = None
+            if getattr(self, 'cursor_ring', None) is not None and self.cursor_ring in self.popup_ax.patches:
+                self.cursor_ring.remove()
+            self.cursor_ring = None
+            self.activate_new_polygon()   # start drawing with the current colour, no extra click
         else:
             self.polygon_mode_button.config(relief=tk.RAISED, bd=2)
             self.brush_mode_button.config(relief=tk.SUNKEN, bd=3)
@@ -1465,34 +1477,27 @@ class DicomViewerApp:
     def draw(self, event):
         # print('draw')
         """Draw on the canvas while the mouse is moving."""
-        try:
-            [rSize, cSize, zSize] = self.segmentation.shape
-        except AttributeError:
+        if self.segmentation is None:
             return
-        # print('segmentation: ', self.segmentation.shape)
         if self.drawing and event.xdata is not None and event.ydata is not None:
-            # print('drawing on image')
-            x, y = event.xdata, event.ydata
-            # print(x, y, cSize, rSize)
-            # Adjust bounds checking based on flip state
-            if self.flip_axes:
-                # When flipped, image dimensions are swapped for display
-                x = max(min(x, rSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
-                y = max(min(y, cSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
-            else:
-                x = max(min(x, cSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
-                y = max(min(y, rSize - self.brush_size // 2 - 1), self.brush_size // 2 + 1)
+            # Keep the brush inside the image shown in the popup
+            rSize, cSize = self.image_stack[self.twoSlider.get_values()[1]].shape
+            x = min(max(event.xdata, 0), cSize - 1)
+            y = min(max(event.ydata, 0), rSize - 1)
 
             # Store the current axis limits
             xlim = self.popup_ax.get_xlim()
             ylim = self.popup_ax.get_ylim()
             # print('xy lim: ', xlim, ylim)
             # print('last: ', self.last_x, self.last_y)
-            if self.last_x and self.last_y:
-                # Draw a line from the last position to the current position
+            if self.last_x is not None and self.last_y is not None:
+                # Draw a line from the last position to the current position, as wide as the
+                # brush (linewidth is in points, the brush size in image pixels)
+                ax_px = self.popup_ax.get_window_extent().width / abs(xlim[1] - xlim[0])
+                width_pt = self.brush_size * ax_px * 72 / self.popup_ax.figure.dpi
                 self.popup_ax.plot(
                     [self.last_x, x], [self.last_y, y],
-                    color=self.brush_color, linewidth=self.brush_size, solid_capstyle="round"
+                    color=self.brush_color, linewidth=width_pt, solid_capstyle="round"
                 )
                 # Draw a circle at the current position
                 circle = plt.Circle(
@@ -1501,7 +1506,7 @@ class DicomViewerApp:
                 self.popup_ax.add_patch(circle)
 
                 # Update the segmentation
-                self.update_segmentation(x, y)
+                self.update_segmentation(self.last_x, self.last_y, x, y)
 
                 # Restore the axis limits
                 self.popup_ax.set_xlim(xlim)
@@ -1567,11 +1572,8 @@ class DicomViewerApp:
 
     def activate_new_polygon(self):
         """Activate a new polygon drawing session."""
-        # Clear any existing polygon
-        self.polygon_points = []
-        if self.current_polygon_line:
-            self.current_polygon_line.remove()
-            self.current_polygon_line = None
+        # Clear any existing polygon (its line may already be gone if the slice was redrawn)
+        self.reset_polygon()
 
         # Set drawing state to active
         self.drawing_polygon = True
@@ -1683,144 +1685,45 @@ class DicomViewerApp:
 
     def apply_polygon_to_segmentation(self):
         """Apply the drawn polygon to the segmentation data."""
-        if not hasattr(self, 'segmentation') or len(self.polygon_points) < 3:
+        if getattr(self, 'segmentation', None) is None or len(self.polygon_points) < 3:
             return
-
         from matplotlib.path import Path
-        import numpy as np
 
-        # Get current slice index
         slice_index = self.twoSlider.get_values()[1]
-
-        # Create a path from polygon points
-        path = Path(self.polygon_points)
-
-        # Get segmentation shape
-        seg_shape = self.segmentation.shape
-
-        print(f"Segmentation shape: {seg_shape}")
-
-        # Create coordinate grids
-        y_coords, x_coords = np.mgrid[0:seg_shape[0], 0:seg_shape[1]]
+        rows, cols = self.image_stack[slice_index].shape   # the popup shows the image as is
+        y_coords, x_coords = np.mgrid[0:rows, 0:cols]
         coords = np.column_stack((x_coords.ravel(), y_coords.ravel()))
+        inside_mask = Path(self.polygon_points).contains_points(coords).reshape(rows, cols)
+        self.paint_segmentation(inside_mask, slice_index)
 
-        # Adjust coordinates if axes are flipped
-        if self.flip_axes:
-            coords = np.column_stack((coords[:, 1], coords[:, 0]))
+    def paint_segmentation(self, display_mask, slice_index):
+        """Relabel the pixels under display_mask (popup image coordinates).
 
-        # Find points inside the polygon
-        inside_mask = path.contains_points(coords)
-        inside_mask = inside_mask.reshape(seg_shape[0], seg_shape[1])
-
-        # Apply segmentation based on mode and overlay settings
-        self.apply_polygon_segmentation(inside_mask, slice_index)
-
-    def apply_polygon_segmentation(self, mask, slice_index):
-        """Apply polygon mask to segmentation based on current mode and overlay settings."""
-        if self.flip_axes:
-            mask = mask.T
-        # if self.click_state == 2:
-        #     mask = mask.T
-
-        # Pixels inside the polygon that carry the "Over ..." label (0 clear, 1 green, 2 red,
-        # 3 blue) get the label of the current mode; all other pixels are left alone
+        Pixels that carry the "Over ..." label (0 clear, 1 green, 2 red, 3 blue) get the label
+        of the current mode; all other pixels are left alone.
+        """
         new_label = {"clear": 0, "green": 1, "red": 2, "blue": 3}.get(self.current_mode)
         if new_label is None:
             return
         seg_slice = self.segmentation[:, :, slice_index]   # view: edits write through
+        # Same rule as update_popup_image: the overlay is transposed when its shape differs from the image
+        mask = display_mask if seg_slice.shape == display_mask.shape else display_mask.T
+        if mask.shape != seg_slice.shape:
+            return   # segmentation doesn't belong to this image
         seg_slice[mask & (seg_slice == self.over_image)] = new_label
 
-    def update_segmentation(self, x, y):
-        """Update the segmentation data based on the brush mode."""
-        if not hasattr(self, 'segmentation'):
-            return  # No segmentation data loaded
-
-        # Get the current slice index
+    def update_segmentation(self, x0, y0, x1, y1):
+        """Paint the brush stroke from (x0, y0) to (x1, y1) (popup image coordinates)."""
+        if getattr(self, 'segmentation', None) is None:
+            return
         slice_index = self.twoSlider.get_values()[1]
-        
-        # Convert coordinates to pixel indices
-        x_index = int(round(x))
-        y_index = int(round(y))
-
-        # Define the brush radius in pixels
-        radius = self.brush_size // 2
-        print('segmentation shape: ', self.segmentation.shape)
-        
-        # Update the segmentation data within the brush radius
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                brush_x = x_index + dx
-                brush_y = y_index + dy
-
-                # Map display coordinates to segmentation coordinates (same as polygon)
-                if self.flip_axes:
-                    seg_i = brush_y
-                    seg_j = brush_x
-                else:
-                    seg_i = brush_x
-                    seg_j = brush_y
-                    
-                # print('seg_i', seg_i, seg_j, self.segmentation.shape)
-
-                if 0 <= seg_i < self.segmentation.shape[1] and 0 <= seg_j < self.segmentation.shape[0]:
-                    i, j = seg_i, seg_j
-                    # print(f"i: {i}, j: {j}, slice index: {slice_index}")
-                    # print(f"self.over_image: {self.over_image}, self.current_mode: {self.current_mode}")
-                    if self.over_image == 0: # on clear
-                        if self.current_mode == "clear": # on clear
-                            # print('draw clear on clear')
-                            self.segmentation[j, i, slice_index] = 0 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
-                        elif self.current_mode == "green": # on green
-                            # print('draw green on clear')
-                            self.segmentation[j, i, slice_index] = 1 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
-                        elif self.current_mode == "red": # on red
-                            # print('draw red on clear')
-                            self.segmentation[j, i, slice_index] = 2 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
-                        elif self.current_mode == "blue":
-                            # print('draw blue on clear')
-                            self.segmentation[j, i, slice_index] = 3 if self.segmentation[j, i, slice_index] == 0 else self.segmentation[j, i, slice_index]
-                    
-                    elif self.over_image == 1: #on Green 
-                        if self.current_mode == "clear":
-                            # print('draw clear on green')
-                            self.segmentation[j, i, slice_index] = 0  if self.segmentation[j, i, slice_index] == 1 else self.segmentation[j, i, slice_index]  # Clear segmentation
-                        # elif self.current_mode == "green":
-                            # print('draw green on green')
-                            # self.segmentation[j, i, slice_index] = 1  # Green segmentation
-                        elif self.current_mode == "red":
-                            # print('draw red on green')
-                            self.segmentation[j, i, slice_index] = 2  if self.segmentation[j, i, slice_index] == 1 else self.segmentation[j, i, slice_index]  # Red segmentation
-                        elif self.current_mode == "blue":
-                            # print("draw blue on green")
-                            self.segmentation[j, i, slice_index] = 3  if self.segmentation[j, i, slice_index] == 1 else self.segmentation[j, i, slice_index] # Blue segmentation
-                    
-                    
-                    elif self.over_image == 2: # on red
-                        if self.current_mode == "clear":
-                            # print('draw clear on red')
-                            self.segmentation[j, i, slice_index] = 0  if self.segmentation[j, i, slice_index] == 2 else self.segmentation[j, i, slice_index]  # Clear segmentation
-                        elif self.current_mode == "green":  
-                            # print('draw green on red')
-                            self.segmentation[j, i, slice_index] = 1  if self.segmentation[j, i, slice_index] == 2 else self.segmentation[j, i, slice_index]  # Green segmentation
-                        # elif self.current_mode == "red":
-                            # print('draw red on red')
-                        elif self.current_mode == "blue":
-                            self.segmentation[j, i, slice_index] = 3  if self.segmentation[j, i, slice_index] == 2 else self.segmentation[j, i, slice_index] # Blue segmentation 
-        
-                    elif self.over_image == 3: # on blue
-                        if self.current_mode == "clear":
-                            # print('draw clear on blue')
-                            self.segmentation[j, i, slice_index] = 0  if self.segmentation[j, i, slice_index] == 3 else self.segmentation[j, i, slice_index]  # Clear segmentation
-                        elif self.current_mode == "green":  
-                            # print('draw green on blue')
-                            self.segmentation[j, i, slice_index] = 1  if self.segmentation[j, i, slice_index] == 3 else self.segmentation[j, i, slice_index]  # Green segmentation
-                        # elif self.current_mode == "red":
-                            # print('draw red on blue')
-                        elif self.current_mode == "red":
-                            self.segmentation[j, i, slice_index] = 2  if self.segmentation[j, i, slice_index] == 3 else self.segmentation[j, i, slice_index] # Blue segmentation 
-        
-        
-        # print('done: ', self.segmentation.shape)
+        rows, cols = self.image_stack[slice_index].shape
+        yy, xx = np.mgrid[0:rows, 0:cols]
+        # Distance from each pixel to the stroke segment; within the brush radius is painted
+        dx, dy = x1 - x0, y1 - y0
+        t = np.clip(((xx - x0) * dx + (yy - y0) * dy) / max(dx * dx + dy * dy, 1e-9), 0, 1)
+        dist2 = (xx - (x0 + t * dx)) ** 2 + (yy - (y0 + t * dy)) ** 2
+        self.paint_segmentation(dist2 <= (self.brush_size / 2) ** 2, slice_index)
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -129,7 +129,7 @@ runFat.bat
 
 The window opens after a few seconds. TensorFlow is loaded only on the first **AI Seg** click, which then takes 10–20 seconds longer. The window opens in abdomen mode (belly icon at the top left). See [README.md](README.md) for how to use it.
 
-Always start it from the project folder. The mode icons (`sat.png`, `thigh.png`) are loaded from the current folder.
+The GUI icons (`sat.png`, `thigh.png`, `polygon.png`, `brush.png`) must stay in the project folder, next to `mriFat`.
 
 ## Folder layout after installation
 
@@ -179,7 +179,7 @@ This only removes the installed packages, not your code, model weights or data.
 | `runFat.bat`: "The system cannot find the path specified" | `.seg` is missing, misnamed or not in the project folder. Repeat step 3, or start `runFat.bat` from the project folder. |
 | `ModuleNotFoundError` for any other package | Step 4 didn't finish. Run it again and check for errors. |
 | AI Seg: "Model file not found" | Copy the `.keras` file into the project folder (step 5). |
-| Mode icons show text ("click to choose") instead of pictures | The app was started from another folder. Use `runFat.bat` from the project folder. |
+| Mode, Polygon or Brush icons show text instead of pictures | The `.png` icons are missing from the project folder (next to `mriFat`). Restore them from git or the ZIP. |
 | Downloads fail behind a hospital or company proxy | Add `--proxy http://user:password@proxy:port` to the `pip install` commands, or ask IT for the proxy address. |
 
 ## Linux and macOS (untested)
