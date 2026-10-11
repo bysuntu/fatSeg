@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-11: Parallel segmentation, progress popup, GUI fixes
+
+- **Per-slice work runs on several CPU cores** (new `mriFat/parallel.py`). In `abd_seg.py` (fat signal, SAT/VAT boundary, labels), `seg.py` (the per-slice part of `segment_stack`), `t1_seg.py` (resampling, denoising, IMAT check) and `dixon_local_imat.py`. Steps that compare neighbouring slices (across-slice ray check, hip-end handling) still run in order. **Results are identical** to running slice by slice (checked on two abdominal scans, VAT relabelling, and Dixon and T1 thigh). On a 4-core laptop: abdomen (72 slices) ~65 s → ~28 s, T1 thigh 9 s → 4 s, Dixon thigh 5 s → 3 s. The 7 worker processes start with the app and use ~50 MB each; they use one math-library thread each (otherwise ~500 MB each, at the same speed). `WORKERS = 1` in `parallel.py` turns it off. Scripts that segment must keep their work under `if __name__ == '__main__':`.
+- **Progress popup:** SAT/AVT Seg, Thigh Seg, AI Seg, Combined and the VAT Fat Fraction relabelling run in the background, with a popup showing the elapsed time. The window stays responsive; the buttons are disabled until the run finishes.
+- **TensorFlow is loaded on the first AI Seg click,** not at startup: the window opens in ~3 s instead of 10–20 s. The U-Net is loaded once and reused on later AI Seg clicks.
+- **Loading another series** clears the previous segmentation. It used to stay: with fewer slices the area plot failed ("list index out of range"), with more it showed the old curves. A seg file whose slice count doesn't match the images is reported in the plot title.
+- **Area plot:** the y-axis now also fits the blue curve (thigh muscle was cut off at the top).
+- **Polygon tool:** applying a polygon is now immediate (was a pixel-by-pixel loop, seconds on 512×512 slices); same result.
+- **Show Image** without loaded slices shows a warning instead of failing (typo `showwarningcerr`).
+- **`requirements.txt`: PyWavelets added.** The T1 thigh method's noise estimate (`skimage.restoration.estimate_sigma`) needs it; without it **Thigh Seg on T1 TSE failed** in a fresh installation. Run `pip install -r requirements.txt` again to get it.
+
 ## 2026-10-09: Abdomen: "VAT Fat Fraction" slider replaces "Segmentation Threshold"
 
 - **GUI:** in abdomen mode the **Segmentation Threshold** box (a raw value, default 100) is replaced by a **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40): a pixel inside the SAT boundary counts as VAT when its signal is at least this share of the slice's fat signal. It changes VAT only; SAT and the SAT/VAT boundary always use 0.4 (`FAT_FRACTION`). The old box only fed the first pass that measures the fat signal and had little effect. The slider is shown in abdomen mode only and hidden in thigh mode, where nothing uses it. Releasing the slider (or an arrow key) relabels VAT with the new value straight away (about 3 s instead of a full SAT/AVT Seg, same result), reusing the last SAT/VAT boundary; it asks first if the segmentation was edited by hand or loaded since.

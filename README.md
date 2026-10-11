@@ -34,6 +34,10 @@ or, equivalently, from the project root:
 
 Start it from the project root: the mode icons (`sat.png`, `thigh.png`) are loaded from the current folder.
 
+**Speed:** the segmentation steps that treat each slice on its own run on several CPU cores (`mriFat/parallel.py`; one core fewer than the machine has, at most 8). The results are identical to running slice by slice. On a 4-core laptop (i5-8250U) a 72-slice abdominal scan takes about 28 s instead of about 65 s, and T1 thigh segmentation about 4 s instead of 9 s. The worker processes start when the app opens and use about 50 MB each. `WORKERS = 1` in `parallel.py` turns this off. While a segmentation runs, a popup shows the elapsed time, and the buttons are disabled until it finishes.
+
+Scripts that call the segmentation functions must keep their work under `if __name__ == '__main__':` (on Windows each worker starts by importing the script that was run), or set `parallel.WORKERS = 1`.
+
 ## Using the app
 
 The image button at the top left switches modes. The **belly** icon is abdomen mode, the **leg** icon is thigh mode. The app opens in abdomen mode.

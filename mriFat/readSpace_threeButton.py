@@ -1,18 +1,21 @@
 import pydicom as dicom
 import os
+import threading
+import time
+import traceback
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import tkinter as tk
-from tkinter import filedialog, messagebox, font
+from tkinter import filedialog, messagebox, font, ttk
 import nibabel as nib
 from PIL import Image, ImageTk
-import tensorflow as tf
 from scipy import ndimage as ndi
 
 from seg import segment_stack as _segment_stack
 from t1_seg import segment_stack as _segment_stack_t1
 import dixon_local_imat  # dixon_local_imat (optional IMAT check for Dixon)
+import parallel
 
 
 from abd_seg import segment_abdomen_stack, relabel_vat
@@ -311,6 +314,8 @@ class DicomViewerApp:
         self.threshold = 0
         self.fat_fraction = 0.4   # abdomen: VAT fat threshold as a fraction of the measured fat signal (SAT is fixed)
         self.ai_seg_active = False
+        self.ai_model = None        # thigh U-Net, loaded on the first AI Seg click
+        self.ai_model_path = None
         self.cache = None
         self.dicom_long_info = None
         self.dicom_long_pixels = None
@@ -344,6 +349,10 @@ class DicomViewerApp:
         
         self.switch_button = tk.Button(left_frame, image=self.sat_img, text="click to choose", command=self.update_button_image)
         self.switch_button.pack(pady=5)
+
+        # Running-job status: a popup with a timer and progress bar while a segmentation runs
+        self.busy = False
+        self.busy_after_id = None
         
         # Sub-frames
         self.left_top_frame = tk.Frame(left_frame, bg="#FFF0F0", width=180, height=160)
@@ -463,11 +472,17 @@ class DicomViewerApp:
 
         # Window close handler
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # Start the segmentation worker processes in the background, so the first run doesn't wait for them
+        parallel.warm_up()
     
     def on_closing(self):
         # Cancel the after callback
         if self.after_id is not None:
             self.root.after_cancel(self.after_id)
+        if self.busy_after_id is not None:
+            self.root.after_cancel(self.busy_after_id)
+        parallel.shutdown()
         plt.close('all')
         self.root.quit()
         self.root.destroy()
@@ -567,6 +582,14 @@ class DicomViewerApp:
                     self.short_sequence = 'T1_TSE'
             self.image_stack = np.array(self.dicom_short_pixels)
             self.abd_state = self.abd_labels = None   # boundary of a previous stack no longer applies
+            # The segmentation belongs to the previous stack: drop it, and the plot drawn from it
+            self.segmentation = None
+            self.ai_seg_active = False
+            if self.flip_axes:
+                self.flip_axes = False
+                self.flip_button.config(text="Flip Seg X/Y", bg="#FF8C00")
+            self.fat_plot.clear()
+            self.fat_plot.figure.canvas.draw()
             # print('image stack shape: ', self.image_stack.shape)
             self.min_crop = 0
             self.max_crop = self.image_stack.shape[0] - 1
@@ -630,18 +653,103 @@ class DicomViewerApp:
         """Keep the VAT fat fraction in step with the slider (VAT is relabelled on release)."""
         self.fat_fraction = round(float(value), 2)
 
+    def busy_widgets(self):
+        """Controls that are disabled while a segmentation runs."""
+        return [self.switch_button, self.load_short_button, self.load_long_button, self.load_seg_button,
+                self.flip_button, self.auto_seg_button, self.show_image_button, self.save_image_button,
+                self.draw_line_button, self.thigh_button, self.ai_seg_button, self.swap_xy_button,
+                self.combined_seg_button, self.threshold_scale]
+
+    def run_busy(self, title, work, done):
+        """Run work() in a background thread while a popup shows a running timer, then done(result).
+
+        work() must not touch Tk widgets; done() runs on the Tk thread and updates the display.
+        """
+        if self.busy:
+            return
+        self.busy = True
+        for w in self.busy_widgets():
+            w.config(state=tk.DISABLED)
+
+        popup = tk.Toplevel(self.root)
+        popup.title(title)
+        popup.resizable(False, False)
+        popup.transient(self.root)                      # stays on top of the main window
+        popup.protocol("WM_DELETE_WINDOW", lambda: None)  # cannot be closed while running
+        label = tk.Label(popup, text=f"{title}...  0.0 s", font=("Arial", 12, "bold"), width=28)
+        label.pack(padx=20, pady=(15, 8))
+        bar = ttk.Progressbar(popup, mode='indeterminate', length=260)
+        bar.pack(padx=20, pady=(0, 15))
+        bar.start(15)
+        # Centre the popup over the main window
+        popup.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - popup.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - popup.winfo_height()) // 2
+        popup.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        start = time.perf_counter()
+        box = {}
+
+        def target():
+            try:
+                box['result'] = work()
+            except Exception as e:
+                traceback.print_exc()
+                box['error'] = e
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+
+        def poll():
+            elapsed = time.perf_counter() - start
+            if thread.is_alive():
+                label.config(text=f"{title}...  {elapsed:.1f} s")
+                self.busy_after_id = self.root.after(100, poll)
+                return
+            self.busy_after_id = None
+            bar.stop()
+            for w in self.busy_widgets():
+                w.config(state=tk.NORMAL)
+            self.busy = False
+            if 'error' in box:
+                popup.destroy()
+                messagebox.showerror("Error", f"{title} failed: {box['error']}")
+                return
+            print(f"{title} done in {elapsed:.1f} s")
+            try:
+                done(box['result'])
+            except Exception as e:
+                traceback.print_exc()
+                popup.destroy()
+                messagebox.showerror("Error", f"{title}: failed to show the result: {e}")
+                return
+            # Show the final time briefly, then close (or close straight away on click)
+            bar.pack_forget()
+            label.config(text=f"{title} done in {elapsed:.1f} s", fg="darkgreen")
+            popup.protocol("WM_DELETE_WINDOW", popup.destroy)
+            popup.bind("<Button-1>", lambda e: popup.destroy())
+            self.root.after(1500, lambda: popup.winfo_exists() and popup.destroy())
+
+        poll()
+
     def auto_segment(self):
         if not hasattr(self, 'image_stack'):
             messagebox.showwarning("Warning", "No image stack loaded.")
             return
         pixel_spacing = float(self.dicom_short_info[0][4][0])
-        self.segmentation, self.abd_state = segment_abdomen_stack(
-            self.image_stack, pixel_spacing=pixel_spacing, vat_fraction=self.fat_fraction, return_state=True)
-        self.abd_labels = self.segmentation.copy()
-        self.abd_state_fraction = self.fat_fraction
-        self.ai_seg_active = False
-        self.update_image_slice()
-        self.update_fat_plot()
+        stack, fraction = self.image_stack, self.fat_fraction
+
+        def work():
+            return segment_abdomen_stack(stack, pixel_spacing=pixel_spacing, vat_fraction=fraction, return_state=True)
+
+        def done(result):
+            self.segmentation, self.abd_state = result
+            self.abd_labels = self.segmentation.copy()
+            self.abd_state_fraction = fraction
+            self.ai_seg_active = False
+            self.update_image_slice()
+            self.update_fat_plot()
+
+        self.run_busy("SAT/AVT Seg", work, done)
 
     def apply_vat_fraction(self, event=None):
         """Relabel VAT with the current VAT Fat Fraction, reusing the last SAT/AVT Seg boundary."""
@@ -655,12 +763,17 @@ class DicomViewerApp:
                                        "The segmentation was edited or loaded since SAT/AVT Seg.\n"
                                        "Relabel VAT with the new value and discard those changes?"):
                 return
-        self.segmentation = relabel_vat(self.image_stack, self.abd_state, self.fat_fraction)
-        self.abd_labels = self.segmentation.copy()
-        self.abd_state_fraction = self.fat_fraction
-        print(f"VAT relabelled with VAT fat fraction {self.fat_fraction}")
-        self.update_image_slice()
-        self.update_fat_plot()
+        stack, state, fraction = self.image_stack, self.abd_state, self.fat_fraction
+
+        def done(labels):
+            self.segmentation = labels
+            self.abd_labels = self.segmentation.copy()
+            self.abd_state_fraction = fraction
+            print(f"VAT relabelled with VAT fat fraction {fraction}")
+            self.update_image_slice()
+            self.update_fat_plot()
+
+        self.run_busy("VAT relabel", lambda: relabel_vat(stack, state, fraction), done)
     
     def thigh_mode(self):
         if self.click_state != 2:
@@ -672,23 +785,25 @@ class DicomViewerApp:
         if self.dicom_short_info is None or self.dicom_short_pixels is None:
             # print("No short axis slices loaded.")
             return
-        target_slice = self.dicom_short_pixels[sliceId]
-        
-        # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence
-        if self.short_sequence == 'T1_TSE':
-            fatSeg = _segment_stack_t1(self.dicom_short_pixels, pixel_spacing=self.dicom_short_info[0][4])
-        else:
-            fatSeg = _segment_stack(self.dicom_short_pixels)
-            fatSeg = dixon_local_imat.apply(self.dicom_short_pixels, fatSeg, self.dicom_short_info[0][4])  # dixon_local_imat
+        pixels, spacing, sequence = self.dicom_short_pixels, self.dicom_short_info[0][4], self.short_sequence
 
-        self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
-        self.segmentation = self.segmentation.transpose(1, 0, 2)
-        self.ai_seg_active = False
+        def work():
+            # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence
+            if sequence == 'T1_TSE':
+                return _segment_stack_t1(pixels, pixel_spacing=spacing)
+            fatSeg = _segment_stack(pixels)
+            return dixon_local_imat.apply(pixels, fatSeg, spacing)  # dixon_local_imat
 
-        self.update_image_slice()
-        self.update_short_slice()
-        self.update_popup_image(sliceId)
-        return
+        def done(fatSeg):
+            self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
+            self.segmentation = self.segmentation.transpose(1, 0, 2)
+            self.ai_seg_active = False
+
+            self.update_image_slice()
+            self.update_short_slice()
+            self.update_popup_image(sliceId)
+
+        self.run_busy("Thigh Seg", work, done)
 
     def ai_seg_mode(self):
         if self.click_state != 2:
@@ -712,50 +827,60 @@ class DicomViewerApp:
             messagebox.showerror("Error", f"Model file not found: {model_path}")
             return
 
-        try:
-            model = tf.keras.models.load_model(model_path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load model: {str(e)}")
-            return
-
         sliceId = self.twoSlider.get_values()[1]
+        pixels = self.dicom_short_pixels
 
-        fatSeg = []
-        for i in range(len(self.dicom_short_pixels)):
-            cur_ = self.dicom_short_pixels[i].astype(np.float32)
+        def work():
+            # Imported here, not at the top: it takes 10-20 s and only AI Seg needs it (and the
+            # parallel workers re-import this file on Windows)
+            import tensorflow as tf
+            # Load the model once and reuse it; reload only if a different file is picked
+            # (e.g. the fine-tuned model was copied in after the first run)
+            if self.ai_model is None or self.ai_model_path != model_path:
+                self.ai_model = tf.keras.models.load_model(model_path)
+                self.ai_model_path = model_path
+            model = self.ai_model
 
-            # Transpose DICOM (H,W) to NIfTI orientation (W,H) to match model training data
-            cur_t = cur_.T
-            nifti_h, nifti_w = cur_t.shape[:2]
+            fatSeg = []
+            for i in range(len(pixels)):
+                cur_ = pixels[i].astype(np.float32)
 
-            # Resize to model input size and add channel dim
-            resized = tf.image.resize(cur_t[..., np.newaxis], [IMG_HEIGHT, IMG_WIDTH])
+                # Transpose DICOM (H,W) to NIfTI orientation (W,H) to match model training data
+                cur_t = cur_.T
+                nifti_h, nifti_w = cur_t.shape[:2]
 
-            # Normalize to [0, 1]
-            max_val = tf.reduce_max(resized)
-            if max_val > 0:
-                resized = resized / max_val
+                # Resize to model input size and add channel dim
+                resized = tf.image.resize(cur_t[..., np.newaxis], [IMG_HEIGHT, IMG_WIDTH])
 
-            # Add batch dimension and predict
-            input_img = tf.expand_dims(resized, axis=0)
-            prediction = model.predict(input_img, verbose=0)
-            mask = np.argmax(prediction[0], axis=-1).astype(np.uint8)
+                # Normalize to [0, 1]
+                max_val = tf.reduce_max(resized)
+                if max_val > 0:
+                    resized = resized / max_val
 
-            # Resize mask back to NIfTI-oriented size with nearest-neighbor
-            mask_resized = tf.image.resize(mask[..., np.newaxis], [nifti_h, nifti_w], method='nearest')
-            mask_resized = mask_resized.numpy()[:, :, 0].astype(np.uint8)
+                # Add batch dimension and predict
+                input_img = tf.expand_dims(resized, axis=0)
+                prediction = model.predict(input_img, verbose=0)
+                mask = np.argmax(prediction[0], axis=-1).astype(np.uint8)
 
-            # Merge all foreground labels (1,2,3) into single green label (1)
-            mask_resized = (mask_resized > 0).astype(np.uint8)
+                # Resize mask back to NIfTI-oriented size with nearest-neighbor
+                mask_resized = tf.image.resize(mask[..., np.newaxis], [nifti_h, nifti_w], method='nearest')
+                mask_resized = mask_resized.numpy()[:, :, 0].astype(np.uint8)
 
-            fatSeg.append(mask_resized)
+                # Merge all foreground labels (1,2,3) into single green label (1)
+                mask_resized = (mask_resized > 0).astype(np.uint8)
 
-        self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
-        self.ai_seg_active = True
+                fatSeg.append(mask_resized)
+            return fatSeg
 
-        self.update_image_slice()
-        self.update_short_slice()
-        self.update_popup_image(sliceId)
+        def done(fatSeg):
+            self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
+            self.ai_seg_active = True
+
+            self.update_image_slice()
+            self.update_short_slice()
+            self.update_popup_image(sliceId)
+
+        self.run_busy("AI Seg", work, done)
 
     def swap_xy_segmentation(self):
         if not hasattr(self, 'segmentation') or self.segmentation is None:
@@ -795,29 +920,38 @@ class DicomViewerApp:
 
         sliceId = self.twoSlider.get_values()[1]
 
-        conventional = _segment_stack(self.dicom_short_pixels)
-        conventional = dixon_local_imat.apply(self.dicom_short_pixels, conventional, self.dicom_short_info[0][4])  # dixon_local_imat
-        for s in range(self.segmentation.shape[2]):
-            green_mask = (self.segmentation[:, :, s] > 0).astype(np.uint8)
+        pixels, spacing = self.dicom_short_pixels, self.dicom_short_info[0][4]
+        segmentation = self.segmentation.copy()
 
-            seg2 = (conventional[s] == 2).astype(np.uint8)
-            muscle = (conventional[s] == 3).astype(np.uint8)
+        def work():
+            conventional = _segment_stack(pixels)
+            conventional = dixon_local_imat.apply(pixels, conventional, spacing)  # dixon_local_imat
+            for s in range(segmentation.shape[2]):
+                green_mask = (segmentation[:, :, s] > 0).astype(np.uint8)
 
-            # Conventional results are in DICOM orientation; segmentation uses double transpose
-            seg2_t = seg2.T
-            muscle_t = muscle.T
+                seg2 = (conventional[s] == 2).astype(np.uint8)
+                muscle = (conventional[s] == 3).astype(np.uint8)
 
-            combined = green_mask.copy()  # keep green (1) as base
-            combined[np.where((seg2_t > 0) & (green_mask > 0))] = 2   # red (IMAT)
-            combined[np.where((muscle_t > 0) & (green_mask > 0))] = 3  # blue (muscle)
+                # Conventional results are in DICOM orientation; segmentation uses double transpose
+                seg2_t = seg2.T
+                muscle_t = muscle.T
 
-            self.segmentation[:, :, s] = combined
+                combined = green_mask.copy()  # keep green (1) as base
+                combined[np.where((seg2_t > 0) & (green_mask > 0))] = 2   # red (IMAT)
+                combined[np.where((muscle_t > 0) & (green_mask > 0))] = 3  # blue (muscle)
 
-        self.ai_seg_active = False
+                segmentation[:, :, s] = combined
+            return segmentation
 
-        self.update_image_slice()
-        self.update_short_slice()
-        self.update_popup_image(sliceId)
+        def done(result):
+            self.segmentation = result
+            self.ai_seg_active = False
+
+            self.update_image_slice()
+            self.update_short_slice()
+            self.update_popup_image(sliceId)
+
+        self.run_busy("Combined", work, done)
 
     def activate_line_drawing(self):
         if hasattr(self, 'temporary_line'):
@@ -1016,6 +1150,11 @@ class DicomViewerApp:
             return
         info = self.dicom_short_info
         self.fat_plot.clear()
+        if self.segmentation.shape[2] != len(info):
+            # e.g. a seg file made from another series: its slices don't match the loaded ones
+            self.fat_plot.set_title(f"Segmentation has {self.segmentation.shape[2]} slices, images have {len(info)}")
+            self.fat_plot.figure.canvas.draw()
+            return
         sat_mass = np.zeros(self.segmentation.shape[2])
         vat_mass = np.zeros(self.segmentation.shape[2])
         imat_mass = np.zeros(self.segmentation.shape[2])
@@ -1036,7 +1175,7 @@ class DicomViewerApp:
         self.fat_plot.plot(slice_index, sat_mass, 'g', label=f"Green: {sat_mass[current_slice]:.2f} cm$^2$", linewidth=0.5)
         self.fat_plot.plot(slice_index, vat_mass, 'r', label=f"Red: {vat_mass[current_slice]:.2f} cm$^2$", linewidth=0.5)
         self.fat_plot.plot(slice_index, imat_mass, 'b', label=f"Blue: {imat_mass[current_slice]:.2f} cm$^2$", linewidth=0.5)
-        upValue = np.ceil(np.max([np.max(sat_mass), np.max(vat_mass)]) / 10) * 10
+        upValue = max(np.ceil(np.max([np.max(sat_mass), np.max(vat_mass), np.max(imat_mass)]) / 10) * 10, 10)
         self.fat_plot.plot([self.min_crop, self.min_crop], [0, upValue], 'b-.', linewidth=1)
         self.fat_plot.plot([self.max_crop, self.max_crop], [0, upValue], 'r-.', linewidth=1)
         self.fat_plot.scatter(current_slice, sat_mass[current_slice], c='g')
@@ -1077,7 +1216,7 @@ class DicomViewerApp:
     
     def show_image_popup(self):
         if not hasattr(self, 'image_stack'):
-            messagebox.showwarningcerr("Warning", "No image stack loaded.")
+            messagebox.showwarning("Warning", "No image stack loaded.")
             return
         popup = tk.Toplevel(self.root)
         popup.title("Image Viewer with Drawing")
@@ -1582,43 +1721,14 @@ class DicomViewerApp:
             mask = mask.T
         # if self.click_state == 2:
         #     mask = mask.T
-        
-        for i in range(mask.shape[0]):
-            for j in range(mask.shape[1]):
-                if mask[i, j]:  # If point is inside polygon
-                    if self.over_image == 0:  # on clear
-                        if self.current_mode == "green":
-                            self.segmentation[i, j, slice_index] = 1 if self.segmentation[i, j, slice_index] == 0 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "red":
-                            self.segmentation[i, j, slice_index] = 2 if self.segmentation[i, j, slice_index] == 0 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "blue":
-                            self.segmentation[i, j, slice_index] = 3 if self.segmentation[i, j, slice_index] == 0 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "clear":
-                            self.segmentation[i, j, slice_index] = 0 if self.segmentation[i, j, slice_index] == 0 else self.segmentation[i, j, slice_index]
 
-                    elif self.over_image == 1:  # on Green
-                        if self.current_mode == "clear":
-                            self.segmentation[i, j, slice_index] = 0 if self.segmentation[i, j, slice_index] == 1 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "red":
-                            self.segmentation[i, j, slice_index] = 2 if self.segmentation[i, j, slice_index] == 1 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "blue":
-                            self.segmentation[i, j, slice_index] = 3 if self.segmentation[i, j, slice_index] == 1 else self.segmentation[i, j, slice_index]
-
-                    elif self.over_image == 2:  # on red
-                        if self.current_mode == "clear":
-                            self.segmentation[i, j, slice_index] = 0 if self.segmentation[i, j, slice_index] == 2 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "green":
-                            self.segmentation[i, j, slice_index] = 1 if self.segmentation[i, j, slice_index] == 2 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "blue":
-                            self.segmentation[i, j, slice_index] = 3 if self.segmentation[i, j, slice_index] == 2 else self.segmentation[i, j, slice_index]
-
-                    elif self.over_image == 3:  # on blue
-                        if self.current_mode == "clear":
-                            self.segmentation[i, j, slice_index] = 0 if self.segmentation[i, j, slice_index] == 3 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "green":
-                            self.segmentation[i, j, slice_index] = 1 if self.segmentation[i, j, slice_index] == 3 else self.segmentation[i, j, slice_index]
-                        elif self.current_mode == "red":
-                            self.segmentation[i, j, slice_index] = 2 if self.segmentation[i, j, slice_index] == 3 else self.segmentation[i, j, slice_index]
+        # Pixels inside the polygon that carry the "Over ..." label (0 clear, 1 green, 2 red,
+        # 3 blue) get the label of the current mode; all other pixels are left alone
+        new_label = {"clear": 0, "green": 1, "red": 2, "blue": 3}.get(self.current_mode)
+        if new_label is None:
+            return
+        seg_slice = self.segmentation[:, :, slice_index]   # view: edits write through
+        seg_slice[mask & (seg_slice == self.over_image)] = new_label
 
     def update_segmentation(self, x, y):
         """Update the segmentation data based on the brush mode."""

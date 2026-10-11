@@ -92,6 +92,7 @@ This downloads about 1.5 GB and can take several minutes. Wait until the prompt 
 | pydicom | reading DICOM images |
 | pylibjpeg, pylibjpeg-libjpeg | reading DICOMs stored with JPEG (e.g. JPEG Lossless) compression |
 | numpy, scipy, scikit-image, opencv-python | image processing and segmentation |
+| PyWavelets | noise estimate in the T1 TSE thigh method |
 | shapely, pygeoops | geometry helpers used by the thigh method |
 | nibabel | reading and writing segmentations (`.nii.gz`) |
 | matplotlib, Pillow | display in the GUI |
@@ -126,7 +127,7 @@ Double-click **`runFat.bat`** in the project folder, or run it from the Command 
 runFat.bat
 ```
 
-The first start can take 10–20 seconds while TensorFlow loads. The window opens in abdomen mode (belly icon at the top left). See [README.md](README.md) for how to use it.
+The window opens after a few seconds. TensorFlow is loaded only on the first **AI Seg** click, which then takes 10–20 seconds longer. The window opens in abdomen mode (belly icon at the top left). See [README.md](README.md) for how to use it.
 
 Always start it from the project folder. The mode icons (`sat.png`, `thigh.png`) are loaded from the current folder.
 
@@ -138,7 +139,8 @@ fatSeg\
 ├── mriFat\                            application code
 │   ├── readSpace_threeButton.py       the GUI
 │   ├── abd_seg.py                     abdominal SAT/VAT segmentation
-│   └── seg.py                         classical thigh segmentation
+│   ├── seg.py                         classical thigh segmentation
+│   └── parallel.py                    runs per-slice work on several CPU cores
 ├── unet_thighfat_finetuned.keras      model weights (step 5, not in git)
 ├── runFat.bat                         starts the app
 ├── requirements.txt

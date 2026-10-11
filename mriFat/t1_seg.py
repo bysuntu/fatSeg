@@ -48,6 +48,7 @@ from skimage.restoration import denoise_nl_means, estimate_sigma
 from scipy import ndimage as ndi
 
 import seg
+from parallel import map_slices
 
 SAT_FRACTION = 0.40    # fat fraction threshold for the SAT ring
 IMAT_FRACTION = 0.40   # first-pass IMAT threshold inside the thigh (refined in step 5)
@@ -128,6 +129,19 @@ def refine_imat(image, fat_level, labels, radius_px, contrast_thr=None, min_pixe
     return out
 
 
+def _prepare(im, size):
+    """Steps 1-3 for one slice: resample to `size` (h, w), denoise, divide by the local fat signal.
+
+    Returns (denoised slice, local fat level or None, fat fraction image).
+    """
+    im = np.asarray(im, np.float32)
+    if size != im.shape:
+        im = cv2.resize(im, (size[1], size[0]), interpolation=cv2.INTER_AREA)
+    im = denoise(im)
+    level = local_fat_level(im, TARGET_SPACING_MM)
+    return im, level, (np.zeros_like(im) if level is None else im / level)
+
+
 def segment_stack(slices, pixel_spacing=None):
     """Segment a stack of axial T1 thigh slices: 1 SAT, 2 IMAT, 3 muscle.
 
@@ -143,22 +157,13 @@ def segment_stack(slices, pixel_spacing=None):
     small_h = max(1, int(round(h * row_mm / TARGET_SPACING_MM)))
     small_w = max(1, int(round(w * col_mm / TARGET_SPACING_MM)))
 
-    denoised, fat_levels, prepared = [], [], []
-    for im in slices:
-        im = np.asarray(im, np.float32)
-        if (small_h, small_w) != (h, w):
-            im = cv2.resize(im, (small_w, small_h), interpolation=cv2.INTER_AREA)
-        im = denoise(im)
-        level = local_fat_level(im, TARGET_SPACING_MM)
-        denoised.append(im)
-        fat_levels.append(level)
-        prepared.append(np.zeros_like(im) if level is None else im / level)
+    n = len(slices)
+    denoised, fat_levels, prepared = zip(*map_slices(_prepare, slices, [(small_h, small_w)] * n))
 
     labels = seg.segment_stack(prepared, sat_thr=SAT_FRACTION, imat_thr=IMAT_FRACTION)
     if LOCAL_RADIUS_MM:
         radius_px = LOCAL_RADIUS_MM / TARGET_SPACING_MM
-        labels = np.array([refine_imat(im, level, lab, radius_px)
-                           for im, level, lab in zip(denoised, fat_levels, labels)], dtype=np.int16)
+        labels = np.array(map_slices(refine_imat, denoised, fat_levels, labels, [radius_px] * n), dtype=np.int16)
     if (small_h, small_w) == (h, w):
         return labels
     return np.array([cv2.resize(l.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)

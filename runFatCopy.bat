@@ -1,0 +1,1 @@
+.seg\Scripts\python.exe .\mriFat\readSpace_threeButton.py

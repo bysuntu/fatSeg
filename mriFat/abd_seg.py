@@ -60,6 +60,8 @@ from skimage.measure import regionprops
 from skimage.morphology import convex_hull_image, disk
 from skimage.segmentation import watershed
 
+from parallel import map_slices
+
 N_RAYS = 360
 MEDIAN_WINDOW = 21     # rays used to judge outliers
 THICK_TOL = 0.10       # a ray is too thick if it exceeds the median by > 10% (+ 3 px)
@@ -415,13 +417,26 @@ def segment_abdomen(image, fat_ref, pixel_spacing=1.0):
     return _labels_from_rays(image, fat_ref, rays)
 
 
+def _slice_fat_signal(image, threshold, pixel_spacing):
+    """Fat signal of one slice from a first pass at `threshold`, or NaN if it has too little SAT."""
+    sat, _ = segment_abdomen(image, threshold / FAT_FRACTION, pixel_spacing)
+    return np.percentile(image[sat], REF_PERCENTILE) if sat.sum() >= 100 else np.nan
+
+
+def _slice_labels(image, fat_ref, rays, vat_fraction):
+    """Label image of one slice (1 SAT, 2 VAT) from its stored boundary."""
+    labels = np.zeros(image.shape, dtype=np.uint8)
+    if rays is not None:
+        sat, vat = _labels_from_rays(image, fat_ref, rays, vat_fraction)
+        labels[sat] = 1
+        labels[vat] = 2
+    return labels
+
+
 def fat_reference(image_stack, threshold=FIRST_PASS_THRESHOLD, pixel_spacing=1.0):
     """Per-slice fat signal: median SAT intensity from a first pass with `threshold` as the fat threshold."""
-    ref = np.full(len(image_stack), np.nan)
-    for i, sl in enumerate(image_stack):
-        sat, _ = segment_abdomen(sl, threshold / FAT_FRACTION, pixel_spacing)
-        if sat.sum() >= 100:
-            ref[i] = np.percentile(sl[sat], REF_PERCENTILE)
+    n = len(image_stack)
+    ref = np.array(map_slices(_slice_fat_signal, image_stack, [threshold] * n, [pixel_spacing] * n), dtype=float)
     if np.all(np.isnan(ref)):
         return np.full(len(image_stack), threshold / FAT_FRACTION)
     ref[np.isnan(ref)] = np.nanmedian(ref)
@@ -443,7 +458,7 @@ def segment_abdomen_stack(image_stack, threshold=FIRST_PASS_THRESHOLD, pixel_spa
     print(f'Abdomen: fat signal {fat_ref.min():.0f}-{fat_ref.max():.0f}; '
           f'SAT fat fraction {FAT_FRACTION:g} (threshold {FAT_FRACTION * fat_ref.min():.0f}-{FAT_FRACTION * fat_ref.max():.0f}), '
           f'VAT fat fraction {vat_fraction:g} (threshold {vat_fraction * fat_ref.min():.0f}-{vat_fraction * fat_ref.max():.0f})')
-    rays = [_slice_rays(sl, fat_ref[i], pixel_spacing) for i, sl in enumerate(image_stack)]
+    rays = map_slices(_slice_rays, image_stack, fat_ref, [pixel_spacing] * len(image_stack))
     _check_across_slices(rays, pixel_spacing)
     state = dict(fat_ref=fat_ref, rays=rays)
     labels = relabel_vat(image_stack, state, vat_fraction)
@@ -456,11 +471,7 @@ def relabel_vat(image_stack, state, vat_fraction=FAT_FRACTION):
     SAT and the boundary do not depend on the VAT fat fraction, so changing it only needs this
     step, not a new segmentation.
     """
-    labels = np.zeros(image_stack.shape, dtype=np.uint8)
-    for i, sl in enumerate(image_stack):
-        if state['rays'][i] is None:
-            continue
-        sat, vat = _labels_from_rays(sl, state['fat_ref'][i], state['rays'][i], vat_fraction)
-        labels[i][sat] = 1
-        labels[i][vat] = 2
+    n = len(image_stack)
+    labels = np.array(map_slices(_slice_labels, image_stack, state['fat_ref'], state['rays'], [vat_fraction] * n),
+                      dtype=np.uint8).reshape(image_stack.shape)
     return labels.transpose(1, 2, 0)

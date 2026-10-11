@@ -17,6 +17,7 @@ readSpace_threeButton.py.
 import numpy as np
 
 import t1_seg
+from parallel import map_slices
 
 ENABLED = True
 RADIUS_MM = 10.0   # neighbourhood for the local muscle level
@@ -32,10 +33,13 @@ def apply(slices, labels, pixel_spacing):
     """
     if not ENABLED:
         return labels
-    radius_px = RADIUS_MM / float(pixel_spacing[0])
-    out = []
-    for image, lab in zip(slices, labels):
-        image = np.asarray(image, np.float32)
-        level = t1_seg.local_fat_level(image, float(pixel_spacing[0]))
-        out.append(t1_seg.refine_imat(image, level, lab, radius_px, CONTRAST, MIN_PIXELS))
+    n = len(slices)
+    out = map_slices(_apply_one, slices, labels, [float(pixel_spacing[0])] * n)
     return np.array(out, dtype=np.int16)
+
+
+def _apply_one(image, lab, spacing_mm):
+    """IMAT check of one slice."""
+    image = np.asarray(image, np.float32)
+    level = t1_seg.local_fat_level(image, spacing_mm)
+    return t1_seg.refine_imat(image, level, lab, RADIUS_MM / spacing_mm, CONTRAST, MIN_PIXELS)

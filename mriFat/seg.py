@@ -10,6 +10,8 @@ import cv2
 from shapely.geometry import Polygon
 import pygeoops
 
+from parallel import map_slices
+
 def load_dicom_image(path):
     dicom = pydicom.dcmread(path)
     image = dicom.pixel_array.astype(np.float32)
@@ -320,6 +322,16 @@ def _solidity(mask):
     return regionprops(mask.astype(np.uint8))[0].solidity
 
 
+def _segment_parts(im, sat_thr, imat_thr):
+    """segment() of one slice as (SAT, IMAT, muscle, body outline); empty if it fails."""
+    try:
+        seg1, seg2, muscle, _, outer = segment(im, return_outer=True, sat_thr=sat_thr, imat_thr=imat_thr)
+        return seg1.astype(np.uint8), seg2.astype(np.uint8), muscle.astype(np.uint8), outer > 0
+    except Exception:
+        empty = np.zeros(np.shape(im), np.uint8)
+        return empty, empty, empty, empty > 0
+
+
 def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_thr=100, imat_thr=80):
     """Segment a stack of axial thigh slices: 1 SAT, 2 IMAT, 3 muscle.
 
@@ -333,14 +345,7 @@ def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_th
     slices: sequence of 2D arrays. Returns an int16 array (n_slices, H, W).
     """
     n = len(slices)
-    parts = []
-    for im in slices:
-        try:
-            seg1, seg2, muscle, _, outer = segment(im, return_outer=True, sat_thr=sat_thr, imat_thr=imat_thr)
-            parts.append((seg1.astype(np.uint8), seg2.astype(np.uint8), muscle.astype(np.uint8), outer > 0))
-        except Exception:
-            empty = np.zeros(np.shape(im), np.uint8)
-            parts.append((empty, empty, empty, empty > 0))
+    parts = map_slices(_segment_parts, slices, [sat_thr] * n, [imat_thr] * n)
 
     body = [_largest_component(p[3]) for p in parts]
     solidity = [_solidity(b) for b in body]
