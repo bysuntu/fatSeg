@@ -15,6 +15,7 @@
   - **Brush:** paints the whole stroke between mouse positions as a round brush (it used to paint separate squares, leaving gaps when the mouse moved fast). It reaches the image edge, and the drawn stroke is as wide as the painted area. It is also instant instead of a per-pixel loop.
 - **Show Image** without loaded slices shows a warning instead of failing (typo `showwarningcerr`).
 - **`requirements.txt`: PyWavelets added.** The T1 thigh method's noise estimate (`skimage.restoration.estimate_sigma`) needs it; without it **Thigh Seg on T1 TSE failed** in a fresh installation. Run `pip install -r requirements.txt` again to get it.
+- **INSTALL.md step 6 also checks `pylibjpeg`, `libjpeg` and `pywt`.** They were in `requirements.txt` but not in the check. An environment built before `pylibjpeg` was added cannot load JPEG Lossless DICOMs: e.g. the `6pt_DIXON_VIBE_F` series of `01260017NHCSLX` failed with "No valid DICOM files found" although the series is there.
 
 ## 2026-10-09: Abdomen: "VAT Fat Fraction" slider replaces "Segmentation Threshold"
 

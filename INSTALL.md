@@ -114,10 +114,10 @@ fatSeg\unet_thighfat_finetuned.keras
 ## Step 6: Check the installation
 
 ```bat
-.seg\Scripts\python.exe -c "import tensorflow, pydicom, nibabel, cv2, skimage, scipy, shapely, pygeoops, PIL, matplotlib, tkinter; print('OK')"
+.seg\Scripts\python.exe -c "import tensorflow, pydicom, pylibjpeg, libjpeg, pywt, nibabel, cv2, skimage, scipy, shapely, pygeoops, PIL, matplotlib, tkinter; print('OK')"
 ```
 
-The last line should read `OK`. TensorFlow may print informational messages before it (e.g. about oneDNN), which can be ignored.
+The last line should read `OK`. A `ModuleNotFoundError` for `pylibjpeg` or `libjpeg` means JPEG-compressed DICOMs (e.g. some Dixon series) won't load; for `pywt`, Thigh Seg on T1 TSE won't run. Rerun step 4 in both cases. TensorFlow may print informational messages before it (e.g. about oneDNN), which can be ignored.
 
 ## Step 7: Start fatSeg
 
