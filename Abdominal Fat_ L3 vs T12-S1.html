@@ -1,0 +1,145 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Abdominal Fat: L3 vs T12-S1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+/* Layout: single reading column (~70ch) with full-width data tables; lab-report tone, label colours as in the fatSeg GUI */
+:root {
+  --paper: #f6f8f9;
+  --ink: #18242b;
+  --muted: #5a6b74;
+  --rule: #d5dee3;
+  --panel: #ffffff;
+  --accent: #1d5f7a;
+  --sat: #2e8b3e;
+  --red: #c0392b;
+  --blue: #2c5fb8;
+  --neg: #b4532a;
+  --pos: #1d5f7a;
+  --track: #e6edf0;
+  --f-display: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-data: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12191d; --ink: #e3eaee; --muted: #93a5ae; --rule: #2b3a42; --panel: #18222791;
+    --accent: #6bb6d4; --sat: #5cc16c; --red: #e8705f; --blue: #7fa6ef; --neg: #e39a73; --pos: #6bb6d4; --track: #24323a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12191d; --ink: #e3eaee; --muted: #93a5ae; --rule: #2b3a42; --panel: #18222791;
+  --accent: #6bb6d4; --sat: #5cc16c; --red: #e8705f; --blue: #7fa6ef; --neg: #e39a73; --pos: #6bb6d4; --track: #24323a;
+  color-scheme: dark;
+}
+body { background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 15.5px; line-height: 1.6; }
+.page { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: flex; flex-direction: column; gap: 34px; }
+.prose { max-width: 70ch; }
+header { border-bottom: 2px solid var(--ink); padding-bottom: 18px; display: flex; flex-direction: column; gap: 8px; }
+.eyebrow { font-family: var(--f-data); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-family: var(--f-display); font-weight: 600; font-size: clamp(28px, 4.4vw, 40px); line-height: 1.15; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--f-display); font-weight: 600; font-size: 23px; margin: 0 0 10px; text-wrap: balance; }
+h3 { font-size: 15.5px; font-weight: 600; margin: 18px 0 6px; }
+p { margin: 0 0 10px; }
+.meta { color: var(--muted); font-size: 14px; margin: 0; }
+section { display: flex; flex-direction: column; gap: 8px; }
+.findings { margin: 0; padding: 18px 22px 18px 40px; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; }
+.findings li { margin-bottom: 6px; } .findings li:last-child { margin-bottom: 0; }
+ul.plain { margin: 0; padding-left: 20px; } ul.plain li { margin-bottom: 4px; }
+.chip { display: inline-block; font-family: var(--f-data); font-size: 12px; font-weight: 500; padding: 0 6px; border-radius: 3px; color: #fff; vertical-align: 1px; }
+.chip.sat { background: var(--sat); } .chip.red { background: var(--red); } .chip.blue { background: var(--blue); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { padding: 7px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; vertical-align: bottom; }
+th.grp { text-align: center; border-bottom: 2px solid var(--rule); }
+td { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+td:first-child, th:first-child { text-align: left; font-family: var(--f-body); }
+tr:last-child td { border-bottom: 0; }
+tr.sum td { font-weight: 500; background: var(--track); }
+.sep { border-left: 1px solid var(--rule); }
+.bar { display: inline-grid; grid-template-columns: 1fr 1fr; width: 90px; height: 8px; vertical-align: middle; margin-left: 8px; background: var(--track); border-radius: 2px; }
+.bar i { display: block; height: 8px; }
+.bar i.n { justify-self: end; background: var(--neg); border-radius: 2px 0 0 2px; }
+.bar i.p { justify-self: start; grid-column: 2; background: var(--pos); border-radius: 0 2px 2px 0; }
+.note { font-size: 13px; color: var(--muted); margin-top: 6px; }
+footer { border-top: 1px solid var(--rule); padding-top: 14px; font-size: 13px; color: var(--muted); }
+@media (max-width: 520px) { body { font-size: 15px; } .page { padding-block: 24px 40px; } }
+</style>
+
+<main class="page">
+<header>
+  <div class="eyebrow">fatSeg · abdominal segmentation · 5 cases</div>
+  <h1>Abdominal fat: AbdoCompL3 vs T12-S1 DIXON VIBE</h1>
+  <p class="meta">How well the two abdominal sequences agree on SAT and VAT where they cover the same body region. Report date 11 Oct 2026. Cases are labelled A1–A5.</p>
+</header>
+
+<section class="prose">
+  <h2>Summary</h2>
+  <ul class="findings">
+    <li><span class="chip sat">SAT</span> agrees between the sequences within 1% in every case (mean absolute difference 0.4%).</li>
+    <li><span class="chip red">VAT</span> differs more: T12 minus L3 is −0.2% to +6.4% (mean +2.2%). T12 measures more VAT in 4 of 5 cases.</li>
+    <li>Total fat (SAT + VAT) agrees within 1.8%.</li>
+    <li>In the case with the largest VAT difference (A4), raising the T12 VAT Fat Fraction from 0.40 to 0.42 equalises the volumes, but pixel overlap does not improve (VAT Dice 0.756 at both). The remaining disagreement is in where thin VAT strands are found, not in how much VAT there is.</li>
+  </ul>
+</section>
+
+<section class="prose">
+  <h2>Data and method</h2>
+  <ul class="plain">
+    <li><b>Sequences:</b> the fat image (<code>_F</code>) of AbdoCompL3 and of T12-S1 DIXON VIBE, scanned in the same session. Example geometry (A4): L3 512 × 512 pixels of 0.98 mm with 3 mm slices; T12 260 × 320 pixels of 1.375 mm with 4 mm slices.</li>
+    <li><b>Segmentation:</b> fatSeg's automatic abdominal method (<code>abd_seg.py</code>), no hand edits. The fat signal of each slice is the median SAT brightness, smoothed over neighbouring slices. SAT and the SAT/VAT boundary use 40% of that signal. The boundary combines rays from the body centre with a closed boundary path, and is checked against neighbouring slices. A pixel inside the boundary is VAT when it reaches the <b>VAT Fat Fraction</b> (default 0.40) of the fat signal.</li>
+    <li><b>Shared region:</b> each scan is cut to the slab the other scan covers, along that scan's own slice direction (120 mm per case). In one case (A2) the two scans are tilted 3.9° against each other; the cut accounts for it.</li>
+    <li><b>Comparison:</b> volumes in cm³; differences are T12 − L3 as a percentage of the mean of the two. Pixel overlap (Dice: 1 = identical, 0 = no shared pixels) was measured by sampling T12 labels at L3 voxel centres from the DICOM geometry, without registration.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>SAT and VAT in the shared region</h2>
+  <div class="tablewrap"><table>
+    <thead>
+      <tr><th></th><th class="grp" colspan="3"><span class="chip sat">SAT</span> cm³</th><th class="grp sep" colspan="3"><span class="chip red">VAT</span> cm³</th><th class="sep">Total</th></tr>
+      <tr><th>Case</th><th>L3</th><th>T12</th><th>T12 − L3</th><th class="sep">L3</th><th>T12</th><th>T12 − L3</th><th class="sep">T12 − L3</th></tr>
+    </thead>
+    <tbody><tr><td>A1</td><td>3,117</td><td>3,124</td><td>+0.2%<span class="bar" aria-hidden="true"><i class="p" style="width:2%"></i></span></td><td class="sep">1,681</td><td>1,714</td><td>+2.0%<span class="bar" aria-hidden="true"><i class="p" style="width:25%"></i></span></td><td class="sep">+0.8%<span class="bar" aria-hidden="true"><i class="p" style="width:10%"></i></span></td></tr><tr><td>A2</td><td>5,111</td><td>5,081</td><td>−0.6%<span class="bar" aria-hidden="true"><i class="n" style="width:8%"></i></span></td><td class="sep">4,633</td><td>4,625</td><td>−0.2%<span class="bar" aria-hidden="true"><i class="n" style="width:2%"></i></span></td><td class="sep">−0.4%<span class="bar" aria-hidden="true"><i class="n" style="width:5%"></i></span></td></tr><tr><td>A3</td><td>2,129</td><td>2,109</td><td>−1.0%<span class="bar" aria-hidden="true"><i class="n" style="width:12%"></i></span></td><td class="sep">864</td><td>878</td><td>+1.6%<span class="bar" aria-hidden="true"><i class="p" style="width:20%"></i></span></td><td class="sep">−0.2%<span class="bar" aria-hidden="true"><i class="n" style="width:2%"></i></span></td></tr><tr><td>A4</td><td>1,299</td><td>1,297</td><td>−0.2%<span class="bar" aria-hidden="true"><i class="n" style="width:2%"></i></span></td><td class="sep">549</td><td>586</td><td>+6.4%<span class="bar" aria-hidden="true"><i class="p" style="width:80%"></i></span></td><td class="sep">+1.8%<span class="bar" aria-hidden="true"><i class="p" style="width:22%"></i></span></td></tr><tr><td>A5</td><td>2,231</td><td>2,230</td><td>−0.0%<span class="bar" aria-hidden="true"><i class="p" style="width:0%"></i></span></td><td class="sep">2,521</td><td>2,552</td><td>+1.2%<span class="bar" aria-hidden="true"><i class="p" style="width:15%"></i></span></td><td class="sep">+0.6%<span class="bar" aria-hidden="true"><i class="p" style="width:8%"></i></span></td></tr><tr class="sum"><td>Mean</td><td></td><td></td><td>−0.3%</td><td class="sep"></td><td></td><td>+2.2%</td><td class="sep">+0.5%</td></tr><tr class="sum"><td>Mean |diff|</td><td></td><td></td><td>0.4%</td><td class="sep"></td><td></td><td>2.3%</td><td class="sep">0.8%</td></tr></tbody>
+  </table></div>
+  <p class="note">Current automatic method with default settings (VAT Fat Fraction 0.40 on both scans). Bars run from −8% to +8%; orange means T12 is lower, blue means T12 is higher.</p>
+</section>
+
+<section>
+  <h2>Earlier saved segmentations</h2>
+  <p class="prose">The segmentation files saved on 1–2 Oct 2026, before the October method changes, agreed less: SAT within 2.7%, VAT +1.3% to +6.6%.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Case</th><th>SAT saved</th><th>SAT current</th><th class="sep">VAT saved</th><th>VAT current</th></tr></thead>
+    <tbody><tr><td>A1</td><td>+2.7%</td><td>+0.2%</td><td class="sep">+6.6%</td><td>+2.0%</td></tr><tr><td>A2</td><td>−0.5%</td><td>−0.6%</td><td class="sep">+1.8%</td><td>−0.2%</td></tr><tr><td>A3</td><td>−0.9%</td><td>−1.0%</td><td class="sep">+1.3%</td><td>+1.6%</td></tr><tr><td>A4</td><td>−0.2%</td><td>−0.2%</td><td class="sep">+6.5%</td><td>+6.4%</td></tr><tr><td>A5</td><td>−0.4%</td><td>−0.0%</td><td class="sep">+1.4%</td><td>+1.2%</td></tr></tbody>
+  </table></div>
+  <p class="note">T12 − L3 in the shared region. Mean absolute difference, saved vs current: SAT 0.9% vs 0.4%, VAT 3.5% vs 2.3%, total 1.5% vs 0.8%.</p>
+</section>
+
+<section>
+  <h2>Case A4: tuning the T12 VAT Fat Fraction</h2>
+  <p class="prose">A4 has the largest VAT difference (+6.4%) and the least VAT (about 550 cm³). L3 was kept at 0.40 while the T12 VAT Fat Fraction was varied. SAT does not depend on this setting (−0.2% throughout).</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>T12 fraction</th><th>L3 VAT</th><th>T12 VAT</th><th>VAT T12 − L3</th><th>Total T12 − L3</th><th class="sep">SAT Dice</th><th>VAT Dice</th></tr></thead>
+    <tbody><tr><td>0.36</td><td>549</td><td>653</td><td>+17.3%<span class="bar" aria-hidden="true"><i class="p" style="width:86%"></i></span></td><td>+5.4%</td><td class="sep">0.955</td><td>0.749</td></tr><tr><td>0.38</td><td>549</td><td>617</td><td>+11.7%<span class="bar" aria-hidden="true"><i class="p" style="width:58%"></i></span></td><td>+3.5%</td><td class="sep">0.955</td><td>0.754</td></tr><tr><td>0.40 (default)</td><td>549</td><td>586</td><td>+6.4%<span class="bar" aria-hidden="true"><i class="p" style="width:32%"></i></span></td><td>+1.8%</td><td class="sep">0.955</td><td>0.756</td></tr><tr><td>0.42</td><td>549</td><td>556</td><td>+1.2%<span class="bar" aria-hidden="true"><i class="p" style="width:6%"></i></span></td><td>+0.2%</td><td class="sep">0.955</td><td>0.756</td></tr><tr><td>0.44</td><td>549</td><td>527</td><td>−4.1%<span class="bar" aria-hidden="true"><i class="n" style="width:20%"></i></span></td><td>−1.3%</td><td class="sep">0.955</td><td>0.753</td></tr><tr><td>0.46</td><td>549</td><td>499</td><td>−9.6%<span class="bar" aria-hidden="true"><i class="n" style="width:48%"></i></span></td><td>−2.9%</td><td class="sep">0.955</td><td>0.748</td></tr></tbody>
+  </table></div>
+  <p class="note">Volumes in cm³. Bars run from −20% to +20%. Each 0.01 step moves T12 VAT by about 15 cm³ (2.7%).</p>
+  <ul class="plain prose">
+    <li>The volumes match at about 0.42 (+1.2%), so the original gap corresponds to a change of only 0.025 in the setting.</li>
+    <li>Pixel overlap stays at VAT Dice 0.75–0.76 at every value. About 21–23% of L3 VAT pixels fall on T12 background and about 1% on T12 SAT. The SAT/VAT boundary itself agrees well (SAT Dice 0.955).</li>
+    <li>VAT Dice per slice is 0.67–0.82 on all 40 L3 slices, so the mismatch is spread evenly rather than confined to a few slices.</li>
+  </ul>
+</section>
+
+<section class="prose">
+  <h2>Interpretation</h2>
+  <p>SAT is a large, compact region and both sequences measure it almost identically. VAT is largely made of thin strands between bowel loops. The two sequences sample them differently (0.98 vs 1.375 mm pixels, 3 vs 4 mm slices), and the bowel can shift between breath-holds, so a strand displaced by 1–2 mm lands on background in the other scan. This explanation has not been verified directly.</p>
+  <p>Tuning the VAT Fat Fraction per scan can equalise VAT volumes, but it does not make the segmentations agree pixel by pixel, and nothing independent shows that a different value is more correct for T12. The tendency of T12 to show slightly more VAT (4 of 5 cases) needs more cases before the default is changed.</p>
+</section>
+
+<footer>Generated with fatSeg (abd_seg.py, compare_overlap.py). Volumes from automatic segmentation without manual correction.</footer>
+</main>
+
+</body></html>

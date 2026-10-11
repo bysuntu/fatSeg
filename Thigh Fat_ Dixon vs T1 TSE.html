@@ -1,0 +1,138 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Thigh Fat: Dixon vs T1 TSE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+/* Layout: single reading column (~70ch) with full-width data tables; lab-report tone, label colours as in the fatSeg GUI */
+:root {
+  --paper: #f6f8f9;
+  --ink: #18242b;
+  --muted: #5a6b74;
+  --rule: #d5dee3;
+  --panel: #ffffff;
+  --accent: #1d5f7a;
+  --sat: #2e8b3e;
+  --red: #c0392b;
+  --blue: #2c5fb8;
+  --neg: #b4532a;
+  --pos: #1d5f7a;
+  --track: #e6edf0;
+  --f-display: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-data: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12191d; --ink: #e3eaee; --muted: #93a5ae; --rule: #2b3a42; --panel: #18222791;
+    --accent: #6bb6d4; --sat: #5cc16c; --red: #e8705f; --blue: #7fa6ef; --neg: #e39a73; --pos: #6bb6d4; --track: #24323a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12191d; --ink: #e3eaee; --muted: #93a5ae; --rule: #2b3a42; --panel: #18222791;
+  --accent: #6bb6d4; --sat: #5cc16c; --red: #e8705f; --blue: #7fa6ef; --neg: #e39a73; --pos: #6bb6d4; --track: #24323a;
+  color-scheme: dark;
+}
+body { background: var(--paper); color: var(--ink); font-family: var(--f-body); font-size: 15.5px; line-height: 1.6; }
+.page { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: flex; flex-direction: column; gap: 34px; }
+.prose { max-width: 70ch; }
+header { border-bottom: 2px solid var(--ink); padding-bottom: 18px; display: flex; flex-direction: column; gap: 8px; }
+.eyebrow { font-family: var(--f-data); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-family: var(--f-display); font-weight: 600; font-size: clamp(28px, 4.4vw, 40px); line-height: 1.15; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--f-display); font-weight: 600; font-size: 23px; margin: 0 0 10px; text-wrap: balance; }
+h3 { font-size: 15.5px; font-weight: 600; margin: 18px 0 6px; }
+p { margin: 0 0 10px; }
+.meta { color: var(--muted); font-size: 14px; margin: 0; }
+section { display: flex; flex-direction: column; gap: 8px; }
+.findings { margin: 0; padding: 18px 22px 18px 40px; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; }
+.findings li { margin-bottom: 6px; } .findings li:last-child { margin-bottom: 0; }
+ul.plain { margin: 0; padding-left: 20px; } ul.plain li { margin-bottom: 4px; }
+.chip { display: inline-block; font-family: var(--f-data); font-size: 12px; font-weight: 500; padding: 0 6px; border-radius: 3px; color: #fff; vertical-align: 1px; }
+.chip.sat { background: var(--sat); } .chip.red { background: var(--red); } .chip.blue { background: var(--blue); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { padding: 7px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--rule); }
+th { font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; vertical-align: bottom; }
+th.grp { text-align: center; border-bottom: 2px solid var(--rule); }
+td { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+td:first-child, th:first-child { text-align: left; font-family: var(--f-body); }
+tr:last-child td { border-bottom: 0; }
+tr.sum td { font-weight: 500; background: var(--track); }
+.sep { border-left: 1px solid var(--rule); }
+.bar { display: inline-grid; grid-template-columns: 1fr 1fr; width: 90px; height: 8px; vertical-align: middle; margin-left: 8px; background: var(--track); border-radius: 2px; }
+.bar i { display: block; height: 8px; }
+.bar i.n { justify-self: end; background: var(--neg); border-radius: 2px 0 0 2px; }
+.bar i.p { justify-self: start; grid-column: 2; background: var(--pos); border-radius: 0 2px 2px 0; }
+.note { font-size: 13px; color: var(--muted); margin-top: 6px; }
+footer { border-top: 1px solid var(--rule); padding-top: 14px; font-size: 13px; color: var(--muted); }
+@media (max-width: 520px) { body { font-size: 15px; } .page { padding-block: 24px 40px; } }
+</style>
+
+<main class="page">
+<header>
+  <div class="eyebrow">fatSeg · thigh segmentation · 5 cases</div>
+  <h1>Thigh fat and muscle: 6pt DIXON VIBE vs T1 TSE</h1>
+  <p class="meta">How well the two thigh sequences agree on SAT, IMAT and muscle where they cover the same region, and how far the IMAT Contrast setting closes the gap. Report date 11 Oct 2026. Cases are labelled C1–C5.</p>
+</header>
+
+<section class="prose">
+  <h2>Summary</h2>
+  <ul class="findings">
+    <li><span class="chip sat">SAT</span> is 2.8–5.0% lower on T1 in every case (mean −3.9%), with good pixel overlap (Dice 0.93–0.97).</li>
+    <li><span class="chip blue">Muscle</span> is 0.4–4.8% higher on T1 (mean +2.2%), Dice 0.93–0.96. Part of the SAT that T1 misses is labelled muscle.</li>
+    <li><span class="chip red">IMAT</span> agrees on average (+1.0%) but not per case: −13.6% to +16.9%, and only about half of the IMAT pixels coincide (Dice 0.42–0.53).</li>
+    <li>Setting the T1 IMAT Contrast per case (0.33–0.46) matches the IMAT volumes within 1%. It does not change SAT and barely changes pixel overlap.</li>
+  </ul>
+</section>
+
+<section class="prose">
+  <h2>Data and method</h2>
+  <ul class="plain">
+    <li><b>Sequences:</b> the fat image of <code>6pt_DIXON_VIBE</code> (<code>_F</code>; 0.8 mm pixels, 3 mm slices) and <code>t1_tse_tra</code> (512 × 512, 0.5 mm pixels, 3 mm slices), from the same session. The two scans of each case cover the same 120 mm and are parallel (tilt ≤ 0.1°).</li>
+    <li><b>Segmentation:</b> fatSeg's automatic Thigh Seg, with a separate method per sequence and no hand edits. Labels: SAT, IMAT (intermuscular fat) and muscle.
+      <ul class="plain">
+        <li><b>Dixon</b> (<code>seg.py</code> + <code>dixon_local_imat.py</code>): fixed fat thresholds, then each IMAT pixel is checked against its neighbours.</li>
+        <li><b>T1</b> (<code>t1_seg.py</code>): resampled to 0.8 mm, denoised and divided by the local fat signal to remove coil shading, then the same steps and the same IMAT check.</li>
+      </ul>
+    </li>
+    <li><b>IMAT Contrast:</b> an IMAT pixel stays IMAT when it lies at least this far from the local muscle level (0) towards the local fat level (1). Defaults: <b>0.25 for Dixon</b>, set so Dixon IMAT matches the pixels that are at least 50% fat on the scanner's fat-fraction map; <b>0.40 for T1</b>, set so T1 IMAT matches Dixon. It can be adjusted in the GUI (0.10–0.90) and changes only IMAT and muscle.</li>
+    <li><b>Comparison:</b> volumes in cm³ in the shared region; differences are T1 − Dixon as a percentage of the mean of the two. Dice (1 = identical, 0 = no shared pixels) was measured by sampling T1 labels at Dixon voxel centres from the DICOM geometry, without registration.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Default settings (Dixon 0.25, T1 0.40)</h2>
+  <div class="tablewrap"><table><thead>
+<tr><th></th><th class="grp" colspan="4"><span class="chip sat">SAT</span> cm³</th><th class="grp sep" colspan="4"><span class="chip red">IMAT</span> cm³</th><th class="grp sep" colspan="4"><span class="chip blue">Muscle</span> cm³</th></tr>
+<tr><th>Case</th><th>Dixon</th><th>T1</th><th>T1 − Dixon</th><th>Dice</th><th class="sep">Dixon</th><th>T1</th><th>T1 − Dixon</th><th>Dice</th><th class="sep">Dixon</th><th>T1</th><th>T1 − Dixon</th><th>Dice</th></tr>
+</thead><tbody><tr><td>C1</td><td>1,866.3</td><td>1,814.3</td><td>−2.8%<span class="bar" aria-hidden="true"><i class="n" style="width:14%"></i></span></td><td>0.966</td><td class="sep">101.6</td><td>114.7</td><td>+12.1%<span class="bar" aria-hidden="true"><i class="p" style="width:61%"></i></span></td><td>0.462</td><td class="sep">1,552.2</td><td>1,567.0</td><td>+0.9%<span class="bar" aria-hidden="true"><i class="p" style="width:5%"></i></span></td><td>0.948</td></tr><tr><td>C2</td><td>1,124.5</td><td>1,081.4</td><td>−3.9%<span class="bar" aria-hidden="true"><i class="n" style="width:20%"></i></span></td><td>0.925</td><td class="sep">66.3</td><td>78.6</td><td>+17.0%<span class="bar" aria-hidden="true"><i class="p" style="width:85%"></i></span></td><td>0.424</td><td class="sep">1,720.1</td><td>1,727.9</td><td>+0.5%<span class="bar" aria-hidden="true"><i class="p" style="width:2%"></i></span></td><td>0.949</td></tr><tr><td>C3</td><td>1,134.8</td><td>1,094.4</td><td>−3.6%<span class="bar" aria-hidden="true"><i class="n" style="width:18%"></i></span></td><td>0.959</td><td class="sep">50.3</td><td>51.7</td><td>+2.7%<span class="bar" aria-hidden="true"><i class="p" style="width:14%"></i></span></td><td>0.492</td><td class="sep">1,184.7</td><td>1,206.0</td><td>+1.8%<span class="bar" aria-hidden="true"><i class="p" style="width:9%"></i></span></td><td>0.962</td></tr><tr><td>C4</td><td>1,553.5</td><td>1,490.3</td><td>−4.2%<span class="bar" aria-hidden="true"><i class="n" style="width:21%"></i></span></td><td>0.963</td><td class="sep">104.6</td><td>91.3</td><td>−13.6%<span class="bar" aria-hidden="true"><i class="n" style="width:68%"></i></span></td><td>0.530</td><td class="sep">1,222.6</td><td>1,260.6</td><td>+3.1%<span class="bar" aria-hidden="true"><i class="p" style="width:15%"></i></span></td><td>0.946</td></tr><tr><td>C5</td><td>1,829.9</td><td>1,740.4</td><td>−5.0%<span class="bar" aria-hidden="true"><i class="n" style="width:25%"></i></span></td><td>0.951</td><td class="sep">201.7</td><td>176.6</td><td>−13.3%<span class="bar" aria-hidden="true"><i class="n" style="width:66%"></i></span></td><td>0.534</td><td class="sep">1,682.1</td><td>1,764.8</td><td>+4.8%<span class="bar" aria-hidden="true"><i class="p" style="width:24%"></i></span></td><td>0.933</td></tr><tr class="sum"><td>Mean</td><td></td><td></td><td>−3.9%</td><td>0.953</td><td class=sep></td><td></td><td>+1.0%</td><td>0.488</td><td class=sep></td><td></td><td>+2.2%</td><td>0.948</td></tr><tr class="sum"><td>Mean |diff|</td><td></td><td></td><td>3.9%</td><td></td><td class=sep></td><td></td><td>11.7%</td><td></td><td class=sep></td><td></td><td>2.2%</td><td></td></tr></tbody></table></div>
+  <p class="note">Bars run from −20% to +20%; orange means T1 is lower, blue means T1 is higher.</p>
+</section>
+
+<section>
+  <h2>T1 IMAT Contrast tuned per case (Dixon at 0.25)</h2>
+  <p class="prose">For each case the T1 setting was chosen, in steps of 0.01, so that T1 IMAT matches Dixon IMAT. The value is shown next to the case.</p>
+  <div class="tablewrap"><table><thead>
+<tr><th></th><th class="grp" colspan="4"><span class="chip sat">SAT</span> cm³</th><th class="grp sep" colspan="4"><span class="chip red">IMAT</span> cm³</th><th class="grp sep" colspan="4"><span class="chip blue">Muscle</span> cm³</th></tr>
+<tr><th>Case</th><th>Dixon</th><th>T1</th><th>T1 − Dixon</th><th>Dice</th><th class="sep">Dixon</th><th>T1</th><th>T1 − Dixon</th><th>Dice</th><th class="sep">Dixon</th><th>T1</th><th>T1 − Dixon</th><th>Dice</th></tr>
+</thead><tbody><tr><td>C1 <span class="meta">at 0.46</span></td><td>1,866.3</td><td>1,814.3</td><td>−2.8%<span class="bar" aria-hidden="true"><i class="n" style="width:14%"></i></span></td><td>0.966</td><td class="sep">101.6</td><td>102.4</td><td>+0.8%<span class="bar" aria-hidden="true"><i class="p" style="width:4%"></i></span></td><td>0.463</td><td class="sep">1,552.2</td><td>1,579.2</td><td>+1.7%<span class="bar" aria-hidden="true"><i class="p" style="width:9%"></i></span></td><td>0.950</td></tr><tr><td>C2 <span class="meta">at 0.46</span></td><td>1,124.5</td><td>1,081.4</td><td>−3.9%<span class="bar" aria-hidden="true"><i class="n" style="width:20%"></i></span></td><td>0.925</td><td class="sep">66.3</td><td>66.7</td><td>+0.6%<span class="bar" aria-hidden="true"><i class="p" style="width:3%"></i></span></td><td>0.431</td><td class="sep">1,720.1</td><td>1,739.8</td><td>+1.1%<span class="bar" aria-hidden="true"><i class="p" style="width:6%"></i></span></td><td>0.951</td></tr><tr><td>C3 <span class="meta">at 0.41</span></td><td>1,134.8</td><td>1,094.4</td><td>−3.6%<span class="bar" aria-hidden="true"><i class="n" style="width:18%"></i></span></td><td>0.959</td><td class="sep">50.3</td><td>50.4</td><td>+0.2%<span class="bar" aria-hidden="true"><i class="p" style="width:1%"></i></span></td><td>0.491</td><td class="sep">1,184.7</td><td>1,207.3</td><td>+1.9%<span class="bar" aria-hidden="true"><i class="p" style="width:9%"></i></span></td><td>0.962</td></tr><tr><td>C4 <span class="meta">at 0.33</span></td><td>1,553.5</td><td>1,490.3</td><td>−4.2%<span class="bar" aria-hidden="true"><i class="n" style="width:21%"></i></span></td><td>0.963</td><td class="sep">104.6</td><td>104.5</td><td>−0.1%<span class="bar" aria-hidden="true"><i class="n" style="width:0%"></i></span></td><td>0.534</td><td class="sep">1,222.6</td><td>1,247.4</td><td>+2.0%<span class="bar" aria-hidden="true"><i class="p" style="width:10%"></i></span></td><td>0.944</td></tr><tr><td>C5 <span class="meta">at 0.33</span></td><td>1,829.9</td><td>1,740.4</td><td>−5.0%<span class="bar" aria-hidden="true"><i class="n" style="width:25%"></i></span></td><td>0.951</td><td class="sep">201.7</td><td>202.4</td><td>+0.3%<span class="bar" aria-hidden="true"><i class="p" style="width:2%"></i></span></td><td>0.540</td><td class="sep">1,682.1</td><td>1,739.0</td><td>+3.3%<span class="bar" aria-hidden="true"><i class="p" style="width:17%"></i></span></td><td>0.930</td></tr><tr class="sum"><td>Mean</td><td></td><td></td><td>−3.9%</td><td>0.953</td><td class=sep></td><td></td><td>+0.4%</td><td>0.492</td><td class=sep></td><td></td><td>+2.0%</td><td>0.947</td></tr><tr class="sum"><td>Mean |diff|</td><td></td><td></td><td>3.9%</td><td></td><td class=sep></td><td></td><td>0.4%</td><td></td><td class=sep></td><td></td><td>2.0%</td><td></td></tr></tbody></table></div>
+  <p class="note">SAT is identical to the default table because the setting never changes SAT.</p>
+</section>
+
+<section class="prose">
+  <h2>Interpretation</h2>
+  <ul class="plain">
+    <li><b>No single T1 value fits all cases.</b> 0.40 already balances them (mean IMAT difference +1.0%). The best single value, 0.41, lowers the mean absolute difference only from 11.7% to 11.0%.</li>
+    <li><b>The per-case values form two groups:</b> about 0.46 for C1–C2 and about 0.33 for C4–C5, with C3 at 0.41. The cases in each group share a case-ID prefix, which may point to different acquisition periods (protocol, coil or scanner). This has not been checked; comparing the acquisition parameters in the DICOM headers would show whether the groups differ.</li>
+    <li><b>IMAT overlap is limited by the images, not by the setting.</b> IMAT forms streaks one or two pixels wide, and T1 separates partly-fat pixels from muscle less well than the Dixon fat image. Dixon IMAT pixels that T1 does not call IMAT are almost all labelled muscle on T1 (46–50% of Dixon IMAT); hardly any are SAT or background.</li>
+    <li><b>The SAT difference is systematic</b> (T1 lower in every case) and comes from the outline: the skin edge and the SAT/muscle boundary sit slightly further inward on T1. The IMAT setting cannot change it.</li>
+  </ul>
+  <h3>Practical use</h3>
+  <p>SAT and muscle from the two sequences are interchangeable within a few percent, with T1 SAT about 4% lower. IMAT should not be compared across sequences at default settings. When a case has both sequences, the T1 IMAT Contrast can be set so that the IMAT volumes match; for T1-only cases, 0.40 is the best available default.</p>
+</section>
+
+<footer>Generated with fatSeg (seg.py, dixon_local_imat.py, t1_seg.py). Volumes from automatic segmentation without manual correction.</footer>
+</main>
+
+</body></html>
