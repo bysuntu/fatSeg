@@ -14,6 +14,7 @@ from scipy import ndimage as ndi
 
 from seg import segment_stack as _segment_stack
 from t1_seg import segment_stack as _segment_stack_t1
+import t1_seg
 import dixon_local_imat  # dixon_local_imat (optional IMAT check for Dixon)
 import parallel
 
@@ -332,6 +333,9 @@ class DicomViewerApp:
         self.short_sequence = None  # 'DIXON_F' or 'T1_TSE', set when short axis slices are loaded
         self.abd_state = None       # abdomen: fat signal + SAT/VAT boundary of the last SAT/AVT Seg (for VAT relabelling)
         self.abd_labels = None      # abdomen: the labels that SAT/AVT Seg (or the last relabelling) produced
+        self.imat_contrast = dixon_local_imat.CONTRAST   # thigh: IMAT contrast setting (default per sequence)
+        self.thigh_state = None     # thigh: first-pass labels + contrast maps of the last Thigh Seg (for IMAT relabelling)
+        self.thigh_labels = None    # thigh: the labels that Thigh Seg (or the last relabelling) produced
         self.after_id = None  # To store after callback ID
         self.flip_axes = False  # Track whether axes are flipped
         
@@ -407,6 +411,21 @@ class DicomViewerApp:
         # VAT is relabelled when the slider is released (or after an arrow key), not while dragging
         self.threshold_scale.bind('<ButtonRelease-1>', self.apply_vat_fraction)
         self.threshold_scale.bind('<KeyRelease>', self.apply_vat_fraction)
+
+        # IMAT contrast slider (thigh): an IMAT pixel stays IMAT if it lies at least this far from the
+        # local muscle level (0) towards the local fat level (1), otherwise it becomes muscle.
+        # Default per sequence: Dixon dixon_local_imat.CONTRAST, T1 TSE t1_seg.LOCAL_CONTRAST.
+        self.imat_frame = tk.Frame(left_frame, bg="#E6F0FA", width=180, height=80)
+        self.imat_frame.pack_propagate(False)
+        tk.Label(self.imat_frame, text="IMAT Contrast:", bg="#E6F0FA", font=("Arial", 9)).pack(pady=(3, 0))
+        self.imat_var = tk.DoubleVar(value=self.imat_contrast)
+        self.imat_scale = tk.Scale(self.imat_frame, from_=0.10, to=0.90, resolution=0.01, orient=tk.HORIZONTAL,
+                                   variable=self.imat_var, command=self.update_imat_contrast, length=160,
+                                   bg="#E6F0FA", highlightthickness=0, font=("Arial", 8))
+        self.imat_scale.pack(pady=(0, 3))
+        # IMAT is relabelled when the slider is released (or after an arrow key), not while dragging
+        self.imat_scale.bind('<ButtonRelease-1>', self.apply_imat_contrast)
+        self.imat_scale.bind('<KeyRelease>', self.apply_imat_contrast)
 
         # Right frame
         right_frame = tk.Frame(main_frame)
@@ -508,6 +527,7 @@ class DicomViewerApp:
             self.click_state = 1
             self.auto_seg_button.pack(pady=5)
             self.threshold_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # VAT Fat Fraction: abdomen only
+            self.imat_frame.pack_forget()
         elif self.click_state == 1:
             self.switch_button.config(image=self.thigh_img)
             self.click_state = 2
@@ -518,6 +538,7 @@ class DicomViewerApp:
             self.swap_xy_button.pack(pady=5)
             self.auto_seg_button.pack_forget()
             self.threshold_frame.pack_forget()   # VAT Fat Fraction is not used in thigh mode
+            self.imat_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # IMAT Contrast: thigh only
         else:
             self.switch_button.config(image=self.sat_img)
             self.click_state = 1
@@ -528,6 +549,7 @@ class DicomViewerApp:
             self.swap_xy_button.pack_forget()
             self.auto_seg_button.pack(pady=5)
             self.threshold_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # VAT Fat Fraction: abdomen only
+            self.imat_frame.pack_forget()
 
     def flip_xy_axes(self):
         """Flip X and Y axes of the segmentation only."""
@@ -590,6 +612,10 @@ class DicomViewerApp:
                     self.short_sequence = 'T1_TSE'
             self.image_stack = np.array(self.dicom_short_pixels)
             self.abd_state = self.abd_labels = None   # boundary of a previous stack no longer applies
+            self.thigh_state = self.thigh_labels = None
+            # IMAT Contrast starts at the default of the loaded sequence
+            self.imat_contrast = t1_seg.LOCAL_CONTRAST if self.short_sequence == 'T1_TSE' else dixon_local_imat.CONTRAST
+            self.imat_var.set(self.imat_contrast)
             # The segmentation belongs to the previous stack: drop it, and the plot drawn from it
             self.segmentation = None
             self.ai_seg_active = False
@@ -666,7 +692,7 @@ class DicomViewerApp:
         return [self.switch_button, self.load_short_button, self.load_long_button, self.load_seg_button,
                 self.flip_button, self.auto_seg_button, self.show_image_button, self.save_image_button,
                 self.draw_line_button, self.thigh_button, self.ai_seg_button, self.swap_xy_button,
-                self.combined_seg_button, self.threshold_scale]
+                self.combined_seg_button, self.threshold_scale, self.imat_scale]
 
     def run_busy(self, title, work, done):
         """Run work() in a background thread while a popup shows a running timer, then done(result).
@@ -783,6 +809,37 @@ class DicomViewerApp:
 
         self.run_busy("VAT relabel", lambda: relabel_vat(stack, state, fraction), done)
     
+    def update_imat_contrast(self, value):
+        """Keep the IMAT contrast in step with the slider (IMAT is relabelled on release)."""
+        self.imat_contrast = round(float(value), 2)
+
+    def apply_imat_contrast(self, event=None):
+        """Relabel IMAT / muscle with the current IMAT Contrast, reusing the last Thigh Seg."""
+        if self.click_state != 2 or self.thigh_state is None:
+            return
+        if self.imat_contrast == getattr(self, 'thigh_state_contrast', None):
+            return
+        current = getattr(self, 'segmentation', None)
+        if current is not None and self.thigh_labels is not None and not np.array_equal(current, self.thigh_labels):
+            if not messagebox.askyesno("IMAT Contrast",
+                                       "The segmentation was edited or loaded since Thigh Seg.\n"
+                                       "Relabel IMAT with the new value and discard those changes?"):
+                return
+        state, contrast = self.thigh_state, self.imat_contrast
+        sliceId = self.twoSlider.get_values()[1]
+
+        def done(labels):
+            self.segmentation = np.array(labels).transpose(1, 2, 0)
+            self.thigh_labels = self.segmentation.copy()
+            self.thigh_state_contrast = contrast
+            self.ai_seg_active = False
+            print(f"IMAT relabelled with IMAT contrast {contrast}")
+            self.update_image_slice()
+            self.update_short_slice()
+            self.update_popup_image(sliceId)
+
+        self.run_busy("IMAT relabel", lambda: t1_seg.relabel_imat(state, contrast), done)
+
     def thigh_mode(self):
         if self.click_state != 2:
             messagebox.showwarning("Mode Incorrect", "Thigh segmentation is only available in Thigh Seg mode.")
@@ -794,17 +851,21 @@ class DicomViewerApp:
             # print("No short axis slices loaded.")
             return
         pixels, spacing, sequence = self.dicom_short_pixels, self.dicom_short_info[0][4], self.short_sequence
+        contrast = self.imat_contrast
 
         def work():
-            # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence
+            # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence. The state
+            # lets the IMAT Contrast slider relabel IMAT / muscle without segmenting again.
             if sequence == 'T1_TSE':
-                return _segment_stack_t1(pixels, pixel_spacing=spacing)
+                return _segment_stack_t1(pixels, pixel_spacing=spacing, contrast_thr=contrast, return_state=True)
             fatSeg = _segment_stack(pixels)
-            return dixon_local_imat.apply(pixels, fatSeg, spacing)  # dixon_local_imat
+            return dixon_local_imat.apply(pixels, fatSeg, spacing, contrast_thr=contrast, return_state=True)  # dixon_local_imat
 
-        def done(fatSeg):
-            self.segmentation = np.array(fatSeg).transpose(2, 1, 0)
-            self.segmentation = self.segmentation.transpose(1, 0, 2)
+        def done(result):
+            fatSeg, self.thigh_state = result
+            self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
+            self.thigh_labels = self.segmentation.copy()
+            self.thigh_state_contrast = contrast
             self.ai_seg_active = False
 
             self.update_image_slice()
@@ -930,10 +991,11 @@ class DicomViewerApp:
 
         pixels, spacing = self.dicom_short_pixels, self.dicom_short_info[0][4]
         segmentation = self.segmentation.copy()
+        contrast = self.imat_contrast
 
         def work():
             conventional = _segment_stack(pixels)
-            conventional = dixon_local_imat.apply(pixels, conventional, spacing)  # dixon_local_imat
+            conventional = dixon_local_imat.apply(pixels, conventional, spacing, contrast_thr=contrast)  # dixon_local_imat
             for s in range(segmentation.shape[2]):
                 green_mask = (segmentation[:, :, s] > 0).astype(np.uint8)
 

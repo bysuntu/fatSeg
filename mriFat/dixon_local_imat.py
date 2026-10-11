@@ -26,20 +26,26 @@ CONTRAST = 0.25    # IMAT stays IMAT if this far from local muscle (0) towards l
 MIN_PIXELS = 5     # smaller IMAT specks count as muscle
 
 
-def apply(slices, labels, pixel_spacing):
+def apply(slices, labels, pixel_spacing, contrast_thr=None, return_state=False):
     """Return labels (n_slices, H, W) with IMAT / muscle re-decided, or unchanged when disabled.
 
     slices: the Dixon fat slices the labels were computed from; pixel_spacing: (row, col) mm.
+    contrast_thr: IMAT contrast setting (default CONTRAST). With return_state=True also returns
+    the state for t1_seg.relabel_imat() (the GUI's IMAT Contrast slider); when disabled its
+    contrast maps are None, so relabelling leaves the labels unchanged.
     """
-    if not ENABLED:
-        return labels
     n = len(slices)
-    out = map_slices(_apply_one, slices, labels, [float(pixel_spacing[0])] * n)
-    return np.array(out, dtype=np.int16)
+    if ENABLED:
+        contrast = map_slices(_contrast_one, slices, labels, [float(pixel_spacing[0])] * n)
+    else:
+        contrast = [None] * n
+    state = dict(labels=np.asarray(labels, np.int16), contrast=contrast, min_pixels=MIN_PIXELS, size=None)
+    out = t1_seg.relabel_imat(state, CONTRAST if contrast_thr is None else contrast_thr)
+    return (out, state) if return_state else out
 
 
-def _apply_one(image, lab, spacing_mm):
-    """IMAT check of one slice."""
+def _contrast_one(image, lab, spacing_mm):
+    """Contrast map of one slice for the IMAT check (None if the slice has no fat or muscle)."""
     image = np.asarray(image, np.float32)
     level = t1_seg.local_fat_level(image, spacing_mm)
-    return t1_seg.refine_imat(image, level, lab, RADIUS_MM / spacing_mm, CONTRAST, MIN_PIXELS)
+    return t1_seg.imat_contrast(image, level, lab, RADIUS_MM / spacing_mm)

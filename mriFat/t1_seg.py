@@ -29,7 +29,8 @@ Idea:
      IMAT pixels within LOCAL_RADIUS_MM; an IMAT pixel stays IMAT when it lies at least
      LOCAL_CONTRAST of the way from that level to the local fat level, in a speck of at
      least MIN_IMAT_PIXELS pixels, otherwise it becomes muscle. Only IMAT is re-checked:
-     muscle never becomes IMAT here, and SAT is never touched.
+     muscle never becomes IMAT here, and SAT is never touched. The GUI's IMAT Contrast
+     slider changes LOCAL_CONTRAST for one stack (relabel_imat, no new segmentation).
   6. Labels are resized back to the original grid.
 
 LOCAL_CONTRAST was tuned on rawThigh (8 cases with both sequences, same slice positions)
@@ -99,11 +100,17 @@ def refine_imat(image, fat_level, labels, radius_px, contrast_thr=None, min_pixe
 
     contrast_thr / min_pixels default to LOCAL_CONTRAST / MIN_IMAT_PIXELS.
     """
-    contrast_thr = LOCAL_CONTRAST if contrast_thr is None else contrast_thr
-    min_pixels = MIN_IMAT_PIXELS if min_pixels is None else min_pixels
+    return apply_contrast(labels, imat_contrast(image, fat_level, labels, radius_px), contrast_thr, min_pixels)
+
+
+def imat_contrast(image, fat_level, labels, radius_px):
+    """Per pixel: how far from the local muscle level (0) towards the local fat level (1).
+
+    None for a slice without fat or without muscle (refine_imat leaves those unchanged).
+    """
     inside = (labels == 2) | (labels == 3)
     if fat_level is None or not inside.any():
-        return labels
+        return None
     # Pixels outside the thigh (SAT, bone, background) would pull the median towards fat or
     # zero; replace them by the smoothed value of the nearby inside pixels first
     m = inside.astype(np.float32)
@@ -114,9 +121,19 @@ def refine_imat(image, fat_level, labels, radius_px, contrast_thr=None, min_pixe
     q = np.clip(values / scale * 255, 0, 255).astype(np.uint8)
     muscle_level = cv2.medianBlur(q, 2 * int(radius_px) + 1).astype(np.float32) / 255 * scale
 
-    contrast = (image - muscle_level) / np.maximum(fat_level - muscle_level, 1e-3)
-    # Only IMAT (label 2) is re-checked: it stays IMAT where it is brighter than its
-    # neighbours, otherwise it becomes muscle. Muscle (3) and SAT (1) are never changed.
+    return ((image - muscle_level) / np.maximum(fat_level - muscle_level, 1e-3)).astype(np.float32)
+
+
+def apply_contrast(labels, contrast, contrast_thr=None, min_pixels=None):
+    """IMAT (label 2) stays IMAT where contrast > contrast_thr, in specks of at least min_pixels;
+    the rest of it becomes muscle. Muscle (3) and SAT (1) are never changed.
+
+    contrast_thr / min_pixels default to LOCAL_CONTRAST / MIN_IMAT_PIXELS.
+    """
+    contrast_thr = LOCAL_CONTRAST if contrast_thr is None else contrast_thr
+    min_pixels = MIN_IMAT_PIXELS if min_pixels is None else min_pixels
+    if contrast is None:
+        return labels
     red = labels == 2
     imat = red & (contrast > contrast_thr)
     pieces, n = ndi.label(imat)
@@ -142,12 +159,29 @@ def _prepare(im, size):
     return im, level, (np.zeros_like(im) if level is None else im / level)
 
 
-def segment_stack(slices, pixel_spacing=None):
+def relabel_imat(state, contrast_thr):
+    """Labels (n_slices, H, W) from a stored IMAT state with another contrast setting.
+
+    Only IMAT / muscle change; SAT, bone and the thigh outline come from the stored labels.
+    state: from segment_stack(..., return_state=True) or dixon_local_imat.apply(..., return_state=True).
+    """
+    labels = np.array([apply_contrast(l, c, contrast_thr, state['min_pixels'])
+                       for l, c in zip(state['labels'], state['contrast'])], dtype=np.int16)
+    size = state.get('size')
+    if size is None or labels.shape[1:] == size:
+        return labels
+    return np.array([cv2.resize(l.astype(np.uint8), (size[1], size[0]), interpolation=cv2.INTER_NEAREST)
+                     for l in labels], dtype=np.int16)
+
+
+def segment_stack(slices, pixel_spacing=None, contrast_thr=None, return_state=False):
     """Segment a stack of axial T1 thigh slices: 1 SAT, 2 IMAT, 3 muscle.
 
     slices: sequence of 2D arrays. pixel_spacing: (row, col) spacing in mm of the
     slices (DICOM PixelSpacing); without it the slices are used at their own size.
-    Returns an int16 array (n_slices, H, W) on the original grid.
+    contrast_thr: IMAT contrast setting of step 5 (default LOCAL_CONTRAST).
+    Returns an int16 array (n_slices, H, W) on the original grid; with return_state=True
+    also the state for relabel_imat() (the GUI's IMAT Contrast slider).
     """
     h, w = np.shape(slices[0])
     if pixel_spacing is None:
@@ -163,8 +197,9 @@ def segment_stack(slices, pixel_spacing=None):
     labels = seg.segment_stack(prepared, sat_thr=SAT_FRACTION, imat_thr=IMAT_FRACTION)
     if LOCAL_RADIUS_MM:
         radius_px = LOCAL_RADIUS_MM / TARGET_SPACING_MM
-        labels = np.array(map_slices(refine_imat, denoised, fat_levels, labels, [radius_px] * n), dtype=np.int16)
-    if (small_h, small_w) == (h, w):
-        return labels
-    return np.array([cv2.resize(l.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
-                     for l in labels], dtype=np.int16)
+        contrast = map_slices(imat_contrast, denoised, fat_levels, labels, [radius_px] * n)
+    else:
+        contrast = [None] * n
+    state = dict(labels=np.asarray(labels, np.int16), contrast=contrast, min_pixels=MIN_IMAT_PIXELS, size=(h, w))
+    labels = relabel_imat(state, contrast_thr)
+    return (labels, state) if return_state else labels

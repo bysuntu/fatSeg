@@ -76,6 +76,8 @@ The **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40) set
 | **Combined** | Uses the AI Seg mask as the outline and fills in IMAT and muscle from the classical method. Run AI Seg first. Dixon fat (`_F`) only. |
 | **Swap XY** | Rotates/flips each slice of the segmentation to correct its orientation. |
 
+The **IMAT Contrast** slider (0.10–0.90 in steps of 0.01) sets how clearly a pixel inside the muscle must stand out to count as IMAT: it stays IMAT when it lies at least this far from the local muscle level (0) towards the local fat level (1), otherwise it becomes muscle (see the IMAT check in [How the thigh segmentation works](#how-the-thigh-segmentation-works)). Lower values give more IMAT, higher values less. The default depends on the loaded sequence and is set on loading: **0.25 for Dixon fat (`_F`), 0.40 for `t1_tse_tra`** (the T1 contrast is lower, so the same value gives 1.2–1.9× more IMAT on T1 than on Dixon). **Release the slider (or use the arrow keys) to apply a new value**: IMAT and muscle are relabelled in about a second, reusing the last **Thigh Seg**; SAT, bone and the thigh outline do not change. If the segmentation was edited by hand or loaded since then, you are asked before it is replaced. **Thigh Seg** and **Combined** use the value set at the time they run. The slider only re-checks pixels the first pass found as IMAT candidates; below about 0.15 that pass, not the slider, limits how much IMAT there can be. The slider is hidden in abdomen mode.
+
 ## Label conventions
 
 | Label | Colour | Abdomen | Thigh |
