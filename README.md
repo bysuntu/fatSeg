@@ -133,7 +133,7 @@ Against the hand-corrected `rawAbd` files (both `03260016NHCTHO` scans and `0525
 On each axial slice (`seg.segment`):
 
 1. **SAT:** fat above a fixed threshold (100 on the raw pixel values); the largest fat region is the subcutaneous ring.
-2. **Femur:** the bright marrow inside the ring that does not touch it. If no femur is found, the slice is still segmented, without bone.
+2. **Femur:** the bright marrow inside the ring that does not touch it. Candidates are bright spots of more than 50 pixels, scored for roundness with their holes filled; the marrow is the largest candidate scoring at least 0.35 of the roundest (`seg.BONE_SCORE_RATIO`), since small round fat spots can be as round as the marrow. Over the stack, `segment_stack` then follows the marrow from slice to slice and swaps it back on a slice where an IMAT spot covers the neighbouring marrow better than that slice's own bone. If no femur is found, the slice is still segmented, without bone.
 3. **IMAT:** the remaining fat inside the ring (threshold 80). Bright specks outside the body are ignored.
 4. **Inner edge of the SAT ring:** fat within 2 pixels of the ring that is connected to it is SAT. (The ring clean-up trims about a pixel off its inner edge, and IMAT is not searched that close to the ring, so this pure fat used to be counted as muscle.)
 5. **Muscle:** everything else inside the body outline.

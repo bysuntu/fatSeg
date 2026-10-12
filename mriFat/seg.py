@@ -61,11 +61,22 @@ def extract_segments_in_roi(labeled_image):
     return segment1, segment2, (minr, minc, maxr, maxc)
 
 
+BONE_SCORE_RATIO = 0.35  # marrow = largest candidate scoring at least this fraction of the roundest one
+
+
 def extract_bone_in_roi(labeled_image, seg1):
+    """Pick the femur marrow among the bright spots inside the SAT ring; the rest is IMAT.
+
+    Candidates: spots of more than 50 pixels not within 3 pixels of the ring. Each is scored
+    for roundness, area / edge^2, with its holes filled first (dark specks inside the marrow
+    would otherwise add edge and lower its score). Small round fat spots can score as high
+    as the marrow, so the marrow is the largest candidate scoring at least BONE_SCORE_RATIO
+    of the best score. The marrow is returned with its holes filled.
+    """
     props = regionprops(labeled_image)
     if not props:
         return np.zeros_like(labeled_image), np.zeros_like(labeled_image), None
-    
+
     allContours = []
 
     others = np.zeros_like(labeled_image)
@@ -76,32 +87,30 @@ def extract_bone_in_roi(labeled_image, seg1):
         cur_ = np.zeros_like(labeled_image)
         cur_[labeled_image == seg.label] = 1
         cur_ = cur_.astype(np.uint8)
-        edge_ = cur_ - cv2.erode(cur_.astype(np.uint8), kernel=np.ones((3, 3), np.uint8), iterations=1)
-        edge_ = np.sum(edge_ > 0.5)
-        area_ = np.sum(cur_ > 0.5)
 
         dd_ = cv2.dilate(cur_.astype(np.uint8), kernel=np.ones((3, 3), np.uint8), iterations=3)
         test_ = seg1 * dd_
         if np.sum(test_) > 0:
             continue
 
-        if area_ > 50:
-            allContours.append([i, area_, edge_, edge_ / area_, area_ / (edge_ * edge_)])
-
-        
+        if np.sum(cur_ > 0.5) > 50:
+            filled_ = ndi.binary_fill_holes(cur_).astype(np.uint8)
+            edge_ = np.sum((filled_ - cv2.erode(filled_, kernel=np.ones((3, 3), np.uint8), iterations=1)) > 0.5)
+            area_ = np.sum(filled_ > 0.5)
+            allContours.append([i, area_, edge_, area_ / (edge_ * edge_)])
 
     if not allContours:
         # No bone candidate (e.g. slice outside the thigh): keep every bright spot as IMAT
         return np.zeros_like(labeled_image), others, None
 
-    allContours = sorted(allContours, key=lambda x: x[-1], reverse=True)
-    index_ = allContours[0][0]
+    best = max(c[-1] for c in allContours)
+    index_ = max((c for c in allContours if c[-1] >= BONE_SCORE_RATIO * best), key=lambda c: c[1])[0]
     selected_ = props[index_]
 
     bone = np.zeros_like(labeled_image)
-    bone[labeled_image == selected_.label] = 1
+    bone[ndi.binary_fill_holes(labeled_image == selected_.label)] = 1
 
-    return bone, others - bone, selected_.bbox
+    return bone, others * (1 - bone), selected_.bbox
 
 
 def apply_roi_mask(image, bbox, mask=None):
@@ -332,6 +341,47 @@ def _segment_parts(im, sat_thr, imat_thr):
         return empty, empty, empty, empty > 0
 
 
+def _fix_bone(parts, window=2):
+    """Keep the marrow consistent through the stack; swap it back where a slice labelled it IMAT.
+
+    The femur hardly moves between slices, but a single slice can pick a round fat spot as
+    the bone and leave the marrow as IMAT. Start from the slice whose bone overlaps the bone
+    of the most slices within `window`, then walk outward: on each slice the bone is the
+    candidate (the slice's own bone or one of its IMAT spots) overlapping the previous
+    slice's bone most. A replaced bone, a bright spot, becomes IMAT. Bone is what is inside
+    the body outline but neither SAT, IMAT nor muscle.
+    """
+    n = len(parts)
+    bones = [(p[3] > 0) & (p[0] == 0) & (p[1] == 0) & (p[2] == 0) for p in parts]
+    if n < 2 or not any(b.any() for b in bones):
+        return list(parts)
+    agree = [sum(1 for j in range(max(0, i - window), min(n, i + window + 1))
+                 if j != i and (bones[i] & bones[j]).any()) for i in range(n)]
+    start = max(range(n), key=lambda i: (agree[i], bones[i].any(), -abs(i - n // 2)))
+
+    fixed = list(parts)
+    for order in (range(start + 1, n), range(start - 1, -1, -1)):
+        prev = bones[start]
+        for i in order:
+            seg1, seg2, muscle, outer = parts[i]
+            if not prev.any() or (bones[i] & prev).sum() >= 0.5 * min(bones[i].sum(), prev.sum()):
+                prev = bones[i] if bones[i].any() else prev
+                continue
+            pieces, m = ndi.label(seg2)
+            cover = np.bincount(pieces[prev].ravel(), minlength=m + 1)
+            cover[0] = 0
+            k = int(np.argmax(cover))
+            if cover[k] <= (bones[i] & prev).sum():
+                prev = bones[i] if bones[i].any() else prev
+                continue
+            new_bone = ndi.binary_fill_holes(pieces == k) & (seg1 == 0)
+            seg2 = ((seg2 > 0) & ~new_bone) | (bones[i] & ~new_bone)
+            muscle = (muscle > 0) & ~new_bone
+            fixed[i] = (seg1, seg2.astype(np.uint8), muscle.astype(np.uint8), outer)
+            prev = new_bone
+    return fixed
+
+
 def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_thr=100, imat_thr=80):
     """Segment a stack of axial thigh slices: 1 SAT, 2 IMAT, 3 muscle.
 
@@ -341,11 +391,12 @@ def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_th
     to the neighbouring slice's thigh grown by max_shift pixels, and is also cut along
     the thin dark skin line where the two legs touch (Sato dark-ridge response above
     ridge_thr). Slices are processed outward from the clean slice nearest the middle.
+    Marrow missed on a slice (labelled IMAT) is restored from its neighbours (_fix_bone).
 
     slices: sequence of 2D arrays. Returns an int16 array (n_slices, H, W).
     """
     n = len(slices)
-    parts = map_slices(_segment_parts, slices, [sat_thr] * n, [imat_thr] * n)
+    parts = _fix_bone(map_slices(_segment_parts, slices, [sat_thr] * n, [imat_thr] * n))
 
     body = [_largest_component(p[3]) for p in parts]
     solidity = [_solidity(b) for b in body]

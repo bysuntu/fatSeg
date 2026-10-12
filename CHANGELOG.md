@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-12: Thigh: femur marrow no longer labelled IMAT
+
+- **Bug:** on some slices the femur marrow was labelled IMAT and a small round fat spot nearby was taken as the bone. `seg.extract_bone_in_roi` picked the roundest bright spot (area / edge²), but dark specks inside the marrow counted as edge and lowered its score, and fat spots just over the 50-pixel minimum scored as high. On `rawThigh` this hit 19 Dixon slices (5 of 8 scans; 9 in `07260009NHCMA9`) and 6 T1 slices (4 scans). Each slice put about 130–250 mm² of marrow into IMAT.
+- **Fix (`mriFat/seg.py`, so Dixon and T1 both):** candidates are scored with their holes filled; the marrow is the largest candidate scoring at least `BONE_SCORE_RATIO` = 0.35 of the roundest; the marrow is returned with its holes filled (the dark specks inside it used to count as muscle). The new `_fix_bone`, called by `segment_stack`, follows the marrow from the slice that agrees best with its neighbours outward, and where an IMAT spot covers the previous slice's marrow better than the slice's own bone, the two swap.
+- **Result on `rawThigh`:** no slice with the marrow as IMAT in either sequence (was 25); no correctly found bone changed by more than 15%. Dixon IMAT −10 ml in total (811 → 801 ml; −1.4 ml on average per scan, up to −6 ml in `07260009NHCMA9`), T1 IMAT −2 ml; SAT unchanged, muscle within 3 ml. Dixon vs the scanner fat-fraction map is unchanged (IMAT Dice vs ≥50% fat 0.779 → 0.777, the marrow it loses was fat), and T1 vs Dixon IMAT Dice 0.508 → 0.511.
+
 ## 2026-10-11: Thigh: "IMAT Contrast" slider
 
 - **GUI:** thigh mode has an **IMAT Contrast** slider (0.10–0.90 in steps of 0.01), the thigh counterpart of the abdomen's VAT Fat Fraction. It sets the level of the IMAT check: an IMAT pixel stays IMAT when it lies at least this far from the local muscle level towards the local fat level, otherwise it becomes muscle. The default is set when a series is loaded: 0.25 for Dixon fat (`_F`, `dixon_local_imat.CONTRAST`), 0.40 for `t1_tse_tra` (`t1_seg.LOCAL_CONTRAST`). Releasing the slider relabels IMAT / muscle in about a second from the last Thigh Seg; SAT, bone and the outline never change. It asks first if the segmentation was edited by hand or loaded since. Thigh Seg and Combined use the current value. Hidden in abdomen mode.
