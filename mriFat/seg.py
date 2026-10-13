@@ -241,14 +241,21 @@ def refine_fat_ring(seg):
 
     return newSeg
 
-def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_thr=80):
+def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_thr=80, sat_blur=0, sat_guard=0, sat_core=0):
     # sat_thr / imat_thr: fat thresholds for the SAT ring and for IMAT inside it.
     # The defaults are for Dixon fat (_F) pixel values; t1_seg.py passes its own.
+    # sat_blur: Gaussian sigma (pixels) of the image the SAT ring is found on; IMAT and
+    # muscle always use the image itself. 0 = off (Dixon); see t1_seg.SAT_BLUR_PX.
+    # sat_guard: with sat_blur, the ring is the one found on the image itself plus what
+    # the blurred ring adds where the image is above sat_guard (clearly fat), connected.
+    # Without it, bright muscle next to a blurred fat joint could become SAT.
+    # sat_core: see below; 0 = off (Dixon); see t1_seg.SAT_CORE.
     if dicom_path is None:
         image = inputImage
     else:
         image = load_dicom_image(dicom_path)
-    labeledFirst = segment_bright_regions(image, threshold=sat_thr, min_size=5)
+    sat_image = cv2.GaussianBlur(np.asarray(image, np.float32), (0, 0), sat_blur) if sat_blur > 0 else image
+    labeledFirst = segment_bright_regions(sat_image, threshold=sat_thr, min_size=5)
     seg1, _, bbox = extract_segments_in_roi(labeledFirst)
 
     # Refine Fat Ring
@@ -257,12 +264,24 @@ def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_
     # plt.show()
 
     seg1 = refine_fat_ring(seg1)
+    if sat_blur > 0:
+        sharp, _, _ = extract_segments_in_roi(segment_bright_regions(image, threshold=sat_thr, min_size=5))
+        sharp = refine_fat_ring(sharp)
+        seg1 = _largest_component((sharp > 0) | ((seg1 > 0) & (np.asarray(image) > sat_guard))).astype(np.uint8)
 
     masked_image = apply_roi_mask(image, bbox, seg1)
     labeledSecond = segment_bright_regions(masked_image, threshold=imat_thr, min_size=5)
     
     # bone, seg2, _ = extract_segments_in_roi(labeledSecond)
     bone, seg2, _ = extract_bone_in_roi(labeledSecond, seg1)
+
+    if sat_core > 0:
+        # SAT must have a clearly fat core (> sat_core) connected to the ring; pixels between
+        # sat_thr and sat_core count only within 2 pixels of it (the blurred edge of fat).
+        # A broad region just above sat_thr (uniformly bright muscle on T1) becomes muscle.
+        core = _largest_component((seg1 > 0) & (np.asarray(image) > sat_core))
+        near = cv2.dilate(core.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
+        seg1 = _largest_component((seg1 > 0) & near).astype(np.uint8)
 
     flood_filled = seg1.copy()
     h, w = image.shape[:2]
@@ -284,7 +303,7 @@ def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_
     # searched within 2 pixels of the ring, so that fat used to end up as muscle. Give fat in
     # that band that is connected to the ring back to SAT.
     band = cv2.dilate(seg1.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
-    rim = band & (image > sat_thr) & (outer_region > 0) & (seg2 == 0) & (bone == 0)
+    rim = band & (sat_image > sat_thr) & (outer_region > 0) & (seg2 == 0) & (bone == 0)
     seg1 = ndi.binary_propagation(seg1 > 0, mask=(seg1 > 0) | rim).astype(np.uint8)
 
     muscle = np.clip(outer_region - seg1 - seg2 - bone, 0, 1)
@@ -331,10 +350,11 @@ def _solidity(mask):
     return regionprops(mask.astype(np.uint8))[0].solidity
 
 
-def _segment_parts(im, sat_thr, imat_thr):
+def _segment_parts(im, sat_thr, imat_thr, sat_blur=0, sat_guard=0, sat_core=0):
     """segment() of one slice as (SAT, IMAT, muscle, body outline); empty if it fails."""
     try:
-        seg1, seg2, muscle, _, outer = segment(im, return_outer=True, sat_thr=sat_thr, imat_thr=imat_thr)
+        seg1, seg2, muscle, _, outer = segment(im, return_outer=True, sat_thr=sat_thr, imat_thr=imat_thr,
+                                               sat_blur=sat_blur, sat_guard=sat_guard, sat_core=sat_core)
         return seg1.astype(np.uint8), seg2.astype(np.uint8), muscle.astype(np.uint8), outer > 0
     except Exception:
         empty = np.zeros(np.shape(im), np.uint8)
@@ -382,7 +402,7 @@ def _fix_bone(parts, window=2):
     return fixed
 
 
-def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_thr=100, imat_thr=80):
+def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_thr=100, imat_thr=80, sat_blur=0, sat_guard=0, sat_core=0):
     """Segment a stack of axial thigh slices: 1 SAT, 2 IMAT, 3 muscle.
 
     Near the hip the other leg or the perineum lies against the thigh and is picked up
@@ -393,10 +413,12 @@ def segment_stack(slices, max_shift=2, solidity_thr=0.98, ridge_thr=0.06, sat_th
     ridge_thr). Slices are processed outward from the clean slice nearest the middle.
     Marrow missed on a slice (labelled IMAT) is restored from its neighbours (_fix_bone).
 
-    slices: sequence of 2D arrays. Returns an int16 array (n_slices, H, W).
+    slices: sequence of 2D arrays. sat_blur / sat_guard / sat_core: see segment().
+    Returns an int16 array (n_slices, H, W).
     """
     n = len(slices)
-    parts = _fix_bone(map_slices(_segment_parts, slices, [sat_thr] * n, [imat_thr] * n))
+    parts = _fix_bone(map_slices(_segment_parts, slices, [sat_thr] * n, [imat_thr] * n,
+                                 [sat_blur] * n, [sat_guard] * n, [sat_core] * n))
 
     body = [_largest_component(p[3]) for p in parts]
     solidity = [_solidity(b) for b in body]

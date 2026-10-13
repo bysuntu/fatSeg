@@ -92,6 +92,7 @@ ARM_CORE_MM = 15       # body parts thicker than 2x this get their own core; arm
 FIRST_PASS_THRESHOLD = 100   # rough fat threshold (raw value) for the first pass that measures the fat signal
 FAT_FRACTION = 0.4     # fat threshold as a fraction of the local fat signal, for SAT and the boundary (tuned on
                        # 5 cases scanned with two sequences: flat optimum 0.3-0.45)
+SAT_EDGE_PX = 2        # SAT fat fraction below FAT_FRACTION: SAT may reach this far outside the body outline
 REF_SMOOTH = 5         # slices; median window for the per-slice fat signal
 REF_PERCENTILE = 50    # percentile of SAT intensity used as the fat signal
 VERT_BAND = (0.12, 0.26)   # vertebral body intensity band, as a fraction of the fat signal
@@ -345,14 +346,24 @@ def _slice_rays(image, fat_ref, pixel_spacing):
     return dict(fat=fat, body=body, center=center, r_skin=r_skin, thick=thick, angles=angles)
 
 
-def _labels_from_rays(image, fat_ref, rays, vat_fraction=FAT_FRACTION):
+def _labels_from_rays(image, fat_ref, rays, vat_fraction=FAT_FRACTION, sat_fraction=FAT_FRACTION):
     """SAT = fat outside the SAT inner edge, VAT = fat inside it (vertebral marrow excluded).
 
-    SAT uses FAT_FRACTION; VAT uses `vat_fraction` (the GUI's 'VAT Fat Fraction').
+    SAT uses `sat_fraction` (the GUI's 'SAT Fat Fraction'), VAT `vat_fraction` (the GUI's
+    'VAT Fat Fraction'); the body outline and SAT/VAT boundary always use FAT_FRACTION.
+    Below FAT_FRACTION, SAT may also take fat up to SAT_EDGE_PX pixels outside the body
+    outline (the partly fat pixels at the skin, which the outline at FAT_FRACTION leaves out).
     """
     r_sat = np.maximum(rays['r_skin'] - rays['thick'], 0)
     sat_inner = _polygon_mask(rays['center'], r_sat, rays['angles'], rays['fat'].shape)
-    sat = rays['fat'] & rays['body'] & ~sat_inner
+    if sat_fraction == FAT_FRACTION:
+        sat = rays['fat'] & rays['body'] & ~sat_inner
+    else:
+        sat_fat = _remove_small(image > sat_fraction * fat_ref)
+        region = rays['body']
+        if sat_fraction < FAT_FRACTION:
+            region = region | ndi.binary_dilation(region, iterations=SAT_EDGE_PX)
+        sat = sat_fat & region & ~sat_inner
     vat_fat = rays['fat'] if vat_fraction == FAT_FRACTION else _remove_small(image > vat_fraction * fat_ref)
     vat = vat_fat & rays['body'] & sat_inner
     vert = _vertebra_mask(image, rays['body'], rays['center'], fat_ref)
@@ -423,11 +434,11 @@ def _slice_fat_signal(image, threshold, pixel_spacing):
     return np.percentile(image[sat], REF_PERCENTILE) if sat.sum() >= 100 else np.nan
 
 
-def _slice_labels(image, fat_ref, rays, vat_fraction):
+def _slice_labels(image, fat_ref, rays, vat_fraction, sat_fraction=FAT_FRACTION):
     """Label image of one slice (1 SAT, 2 VAT) from its stored boundary."""
     labels = np.zeros(image.shape, dtype=np.uint8)
     if rays is not None:
-        sat, vat = _labels_from_rays(image, fat_ref, rays, vat_fraction)
+        sat, vat = _labels_from_rays(image, fat_ref, rays, vat_fraction, sat_fraction)
         labels[sat] = 1
         labels[vat] = 2
     return labels
@@ -445,33 +456,36 @@ def fat_reference(image_stack, threshold=FIRST_PASS_THRESHOLD, pixel_spacing=1.0
 
 
 def segment_abdomen_stack(image_stack, threshold=FIRST_PASS_THRESHOLD, pixel_spacing=1.0, vat_fraction=FAT_FRACTION,
-                          return_state=False):
+                          return_state=False, sat_fraction=FAT_FRACTION):
     """Segment a (S, H, W) stack. Returns labels shaped (H, W, S): 1 SAT, 2 VAT.
 
     `threshold` (raw value) only needs to roughly separate fat for the first pass that
-    measures the fat signal. SAT and the SAT/VAT boundary use FAT_FRACTION of that signal;
-    VAT uses `vat_fraction` (the GUI's 'VAT Fat Fraction', default FAT_FRACTION).
+    measures the fat signal. The body outline and SAT/VAT boundary use FAT_FRACTION of that
+    signal; SAT pixels use `sat_fraction` (the GUI's 'SAT Fat Fraction') and VAT pixels
+    `vat_fraction` (the GUI's 'VAT Fat Fraction'), both default FAT_FRACTION.
     `pixel_spacing` is the in-plane pixel size in mm.
     With return_state=True also returns the fat signal and boundary, for relabel_vat().
     """
     fat_ref = fat_reference(image_stack, threshold, pixel_spacing)
     print(f'Abdomen: fat signal {fat_ref.min():.0f}-{fat_ref.max():.0f}; '
-          f'SAT fat fraction {FAT_FRACTION:g} (threshold {FAT_FRACTION * fat_ref.min():.0f}-{FAT_FRACTION * fat_ref.max():.0f}), '
+          f'SAT fat fraction {sat_fraction:g} (threshold {sat_fraction * fat_ref.min():.0f}-{sat_fraction * fat_ref.max():.0f}), '
           f'VAT fat fraction {vat_fraction:g} (threshold {vat_fraction * fat_ref.min():.0f}-{vat_fraction * fat_ref.max():.0f})')
     rays = map_slices(_slice_rays, image_stack, fat_ref, [pixel_spacing] * len(image_stack))
     _check_across_slices(rays, pixel_spacing)
     state = dict(fat_ref=fat_ref, rays=rays)
-    labels = relabel_vat(image_stack, state, vat_fraction)
+    labels = relabel_vat(image_stack, state, vat_fraction, sat_fraction)
     return (labels, state) if return_state else labels
 
 
-def relabel_vat(image_stack, state, vat_fraction=FAT_FRACTION):
-    """Labels (H, W, S) from a stored fat signal and SAT/VAT boundary, with VAT at `vat_fraction`.
+def relabel_vat(image_stack, state, vat_fraction=FAT_FRACTION, sat_fraction=FAT_FRACTION):
+    """Labels (H, W, S) from a stored fat signal and SAT/VAT boundary, with VAT at `vat_fraction`
+    and SAT at `sat_fraction`.
 
-    SAT and the boundary do not depend on the VAT fat fraction, so changing it only needs this
-    step, not a new segmentation.
+    The boundary does not depend on either fraction, so changing them only needs this step,
+    not a new segmentation.
     """
     n = len(image_stack)
-    labels = np.array(map_slices(_slice_labels, image_stack, state['fat_ref'], state['rays'], [vat_fraction] * n),
+    labels = np.array(map_slices(_slice_labels, image_stack, state['fat_ref'], state['rays'], [vat_fraction] * n,
+                                 [sat_fraction] * n),
                       dtype=np.uint8).reshape(image_stack.shape)
     return labels.transpose(1, 2, 0)

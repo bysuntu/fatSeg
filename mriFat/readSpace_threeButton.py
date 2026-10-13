@@ -21,6 +21,12 @@ import parallel
 
 from abd_seg import segment_abdomen_stack, relabel_vat
 
+# Thigh SAT Threshold slider, per sequence: Dixon fat (_F) raw signal (seg.segment_stack sat_thr),
+# T1 TSE fat fraction of the local fat signal (t1_seg.SAT_FRACTION).
+THIGH_SAT = {'DIXON_F': dict(default=100, from_=50, to=200, resolution=1, label="SAT Threshold (signal):"),
+             'T1_TSE': dict(default=t1_seg.SAT_FRACTION, from_=0.30, to=0.60, resolution=0.01,
+                            label="SAT Threshold (fat fraction):")}
+
 # The GUI icons (sat.png, thigh.png, polygon.png, brush.png) sit in the project folder,
 # one level above this file, wherever the app is started from
 ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
@@ -321,7 +327,8 @@ class DicomViewerApp:
         self.root.configure(background='black')
         self.click_state = 1  # Start with SAT mode (state 1)
         self.threshold = 0
-        self.fat_fraction = 0.4   # abdomen: VAT fat threshold as a fraction of the measured fat signal (SAT is fixed)
+        self.fat_fraction = 0.4   # abdomen: VAT fat threshold as a fraction of the measured fat signal
+        self.sat_fraction = 0.4   # abdomen: SAT fat threshold, same units (the SAT/VAT boundary is fixed)
         self.ai_seg_active = False
         self.ai_model = None        # thigh U-Net, loaded on the first AI Seg click
         self.ai_model_path = None
@@ -335,6 +342,9 @@ class DicomViewerApp:
         self.abd_labels = None      # abdomen: the labels that SAT/AVT Seg (or the last relabelling) produced
         self.imat_contrast = dixon_local_imat.CONTRAST   # thigh: IMAT contrast setting (default per sequence)
         self.thigh_state = None     # thigh: first-pass labels + contrast maps of the last Thigh Seg (for IMAT relabelling)
+        self.thigh_sat = THIGH_SAT['DIXON_F']['default']   # thigh: SAT threshold (units per sequence, see THIGH_SAT)
+        self.thigh_radius = int(t1_seg.LOCAL_RADIUS_MM)    # thigh, T1: IMAT check neighbourhood (mm)
+        self.thigh_sat_radius = int(t1_seg.SAT_RADIUS_MM)  # thigh, T1: SAT check neighbourhood (mm), 0 = off
         self.thigh_labels = None    # thigh: the labels that Thigh Seg (or the last relabelling) produced
         self.after_id = None  # To store after callback ID
         self.flip_axes = False  # Track whether axes are flipped
@@ -380,7 +390,7 @@ class DicomViewerApp:
         self.left_bottom_frame.pack_propagate(False)
 
         # Threshold input frame
-        self.threshold_frame = tk.Frame(left_frame, bg="#FFF8DC", width=180, height=80)
+        self.threshold_frame = tk.Frame(left_frame, bg="#FFF8DC", width=180, height=150)
         self.threshold_frame.pack(padx=5, pady=5)
         self.threshold_frame.pack_propagate(False)
 
@@ -399,7 +409,7 @@ class DicomViewerApp:
         self.combined_seg_button = tk.Button(self.left_mid_frame, text="Combined", command=self.combined_seg_mode, bg="#8B4513", fg="white", width=16)
 
         # VAT fat fraction slider (abdomen): a pixel inside the SAT boundary is VAT if its signal is at
-        # least this share of the fat signal. SAT always uses abd_seg.FAT_FRACTION.
+        # least this share of the fat signal.
         threshold_label = tk.Label(self.threshold_frame, text="VAT Fat Fraction:", bg="#FFF8DC", font=("Arial", 9))
         threshold_label.pack(pady=(3, 0))
 
@@ -412,10 +422,21 @@ class DicomViewerApp:
         self.threshold_scale.bind('<ButtonRelease-1>', self.apply_vat_fraction)
         self.threshold_scale.bind('<KeyRelease>', self.apply_vat_fraction)
 
+        # SAT fat fraction slider (abdomen): a pixel outside the SAT boundary is SAT if its signal is at
+        # least this share of the fat signal. The body outline and boundary always use abd_seg.FAT_FRACTION.
+        tk.Label(self.threshold_frame, text="SAT Fat Fraction:", bg="#FFF8DC", font=("Arial", 9)).pack(pady=(3, 0))
+        self.sat_var = tk.DoubleVar(value=self.sat_fraction)
+        self.sat_scale = tk.Scale(self.threshold_frame, from_=0.20, to=0.60, resolution=0.01, orient=tk.HORIZONTAL,
+                                  variable=self.sat_var, command=self.update_sat_fraction, length=160,
+                                  bg="#FFF8DC", highlightthickness=0, font=("Arial", 8))
+        self.sat_scale.pack(pady=(0, 3))
+        self.sat_scale.bind('<ButtonRelease-1>', self.apply_vat_fraction)
+        self.sat_scale.bind('<KeyRelease>', self.apply_vat_fraction)
+
         # IMAT contrast slider (thigh): an IMAT pixel stays IMAT if it lies at least this far from the
         # local muscle level (0) towards the local fat level (1), otherwise it becomes muscle.
         # Default per sequence: Dixon dixon_local_imat.CONTRAST, T1 TSE t1_seg.LOCAL_CONTRAST.
-        self.imat_frame = tk.Frame(left_frame, bg="#E6F0FA", width=180, height=80)
+        self.imat_frame = tk.Frame(left_frame, bg="#E6F0FA", width=180, height=105)
         self.imat_frame.pack_propagate(False)
         tk.Label(self.imat_frame, text="IMAT Contrast:", bg="#E6F0FA", font=("Arial", 9)).pack(pady=(3, 0))
         self.imat_var = tk.DoubleVar(value=self.imat_contrast)
@@ -426,6 +447,48 @@ class DicomViewerApp:
         # IMAT is relabelled when the slider is released (or after an arrow key), not while dragging
         self.imat_scale.bind('<ButtonRelease-1>', self.apply_imat_contrast)
         self.imat_scale.bind('<KeyRelease>', self.apply_imat_contrast)
+        # "Advanced" unfolds the SAT Threshold and IMAT Radius sliders below (thigh_adv_frame)
+        self.thigh_adv_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.imat_frame, text="Advanced", variable=self.thigh_adv_var, command=self.show_thigh_controls,
+                       bg="#E6F0FA", activebackground="#E6F0FA", font=("Arial", 9)).pack()
+        self.thigh_adv_frame = tk.Frame(left_frame, bg="#E6F0FA", width=180)
+
+        # SAT threshold slider (thigh): fat above it, connected to the subcutaneous ring, is SAT.
+        # Units and range per sequence (THIGH_SAT), set when a series is loaded. Changing it
+        # runs Thigh Seg again (the SAT ring decides what is searched for IMAT and muscle).
+        self.thigh_sat_label = tk.Label(self.thigh_adv_frame, text=THIGH_SAT['DIXON_F']['label'], bg="#E6F0FA", font=("Arial", 9))
+        self.thigh_sat_label.pack(pady=(3, 0))
+        self.thigh_sat_var = tk.DoubleVar(value=self.thigh_sat)
+        cfg = THIGH_SAT['DIXON_F']
+        self.thigh_sat_scale = tk.Scale(self.thigh_adv_frame, from_=cfg['from_'], to=cfg['to'], resolution=cfg['resolution'],
+                                        orient=tk.HORIZONTAL, variable=self.thigh_sat_var, command=self.update_thigh_sat,
+                                        length=160, bg="#E6F0FA", highlightthickness=0, font=("Arial", 8))
+        self.thigh_sat_scale.pack(pady=(0, 3))
+        self.thigh_sat_scale.bind('<ButtonRelease-1>', self.apply_thigh_sat)
+        self.thigh_sat_scale.bind('<KeyRelease>', self.apply_thigh_sat)
+
+        # IMAT radius slider (thigh, T1 only): neighbourhood (mm) of the local muscle level in the
+        # IMAT check (t1_seg.LOCAL_RADIUS_MM). Changing it runs Thigh Seg again.
+        self.thigh_radius_box = tk.Frame(self.thigh_adv_frame, bg="#E6F0FA")
+        tk.Label(self.thigh_radius_box, text="IMAT Radius (mm, T1):", bg="#E6F0FA", font=("Arial", 9)).pack(pady=(3, 0))
+        self.thigh_radius_var = tk.DoubleVar(value=self.thigh_radius)
+        self.thigh_radius_scale = tk.Scale(self.thigh_radius_box, from_=4, to=30, resolution=1, orient=tk.HORIZONTAL,
+                                           variable=self.thigh_radius_var, command=self.update_thigh_radius, length=160,
+                                           bg="#E6F0FA", highlightthickness=0, font=("Arial", 8))
+        self.thigh_radius_scale.pack(pady=(0, 3))
+        self.thigh_radius_scale.bind('<ButtonRelease-1>', self.apply_thigh_sat)
+        self.thigh_radius_scale.bind('<KeyRelease>', self.apply_thigh_sat)
+
+        # SAT radius slider (thigh, T1 only): neighbourhood (mm) of the SAT local-contrast check
+        # (t1_seg.check_sat); 0 = off (default). Changing it runs Thigh Seg again.
+        tk.Label(self.thigh_radius_box, text="SAT Radius (mm, T1, 0 = off):", bg="#E6F0FA", font=("Arial", 9)).pack(pady=(3, 0))
+        self.thigh_sat_radius_var = tk.DoubleVar(value=self.thigh_sat_radius)
+        self.thigh_sat_radius_scale = tk.Scale(self.thigh_radius_box, from_=0, to=30, resolution=1, orient=tk.HORIZONTAL,
+                                               variable=self.thigh_sat_radius_var, command=self.update_thigh_sat_radius,
+                                               length=160, bg="#E6F0FA", highlightthickness=0, font=("Arial", 8))
+        self.thigh_sat_radius_scale.pack(pady=(0, 3))
+        self.thigh_sat_radius_scale.bind('<ButtonRelease-1>', self.apply_thigh_sat)
+        self.thigh_sat_radius_scale.bind('<KeyRelease>', self.apply_thigh_sat)
 
         # Right frame
         right_frame = tk.Frame(main_frame)
@@ -514,7 +577,51 @@ class DicomViewerApp:
         self.root.quit()
         self.root.destroy()
     
-    def update_button_image(self):
+    def clear_views(self):
+        """Drop the loaded series, segmentation and drawn lines, and blank every view.
+
+        Used when the mode changes: the images and labels of one mode (abdomen SAT/VAT,
+        thigh SAT/IMAT/muscle) do not belong in the other.
+        """
+        self.dicom_short_pixels = self.dicom_short_info = None
+        self.dicom_long_pixels = self.dicom_long_info = None
+        if hasattr(self, 'image_stack'):
+            del self.image_stack
+        self.short_sequence = None
+        self.segmentation = None
+        self.abd_state = self.abd_labels = None
+        self.thigh_state = self.thigh_labels = None
+        self.ai_seg_active = False
+        self.permanent_lines = []
+        self.start_point = self.end_point = None
+        self.line_drawing_active = False
+        if self.flip_axes:
+            self.flip_axes = False
+            self.flip_button.config(text="Flip Seg X/Y", bg="#FF8C00")
+        popup = getattr(self, 'image_popup', None)
+        if popup is not None and popup.winfo_exists():
+            popup.destroy()
+        self.image_popup = None
+        for ax in (self.ax_long_2d, self.ax_slice, self.fat_plot):
+            ax.clear()
+        self.ax_long_2d.set_axis_off()
+        self.ax_slice.set_axis_off()
+        for fig in (self.fig_long_2d, self.fig_slice, self.fig_plot):
+            fig.canvas.draw()
+
+    def update_button_image(self, confirm=True):
+        """Switch between abdomen and thigh mode; the views of the old mode are cleared.
+
+        confirm: ask first when a segmentation would be lost (False when loading a series
+        switches the mode itself).
+        """
+        if self.click_state in (1, 2) and getattr(self, 'fig_slice', None) is not None:
+            if confirm and getattr(self, 'segmentation', None) is not None:
+                if not messagebox.askyesno("Switch mode",
+                                           "Switching mode clears the loaded images and the segmentation.\n"
+                                           "Save the segmentation first if you need it. Switch now?"):
+                    return
+            self.clear_views()
         self.load_long_button.pack(pady=5)
         self.load_short_button.pack(pady=5)
         self.load_seg_button.pack(pady=5)
@@ -528,6 +635,7 @@ class DicomViewerApp:
             self.auto_seg_button.pack(pady=5)
             self.threshold_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # VAT Fat Fraction: abdomen only
             self.imat_frame.pack_forget()
+            self.thigh_adv_frame.pack_forget()
         elif self.click_state == 1:
             self.switch_button.config(image=self.thigh_img)
             self.click_state = 2
@@ -539,6 +647,7 @@ class DicomViewerApp:
             self.auto_seg_button.pack_forget()
             self.threshold_frame.pack_forget()   # VAT Fat Fraction is not used in thigh mode
             self.imat_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # IMAT Contrast: thigh only
+            self.show_thigh_controls()
         else:
             self.switch_button.config(image=self.sat_img)
             self.click_state = 1
@@ -550,6 +659,18 @@ class DicomViewerApp:
             self.auto_seg_button.pack(pady=5)
             self.threshold_frame.pack(padx=5, pady=5, after=self.left_bottom_frame)   # VAT Fat Fraction: abdomen only
             self.imat_frame.pack_forget()
+            self.thigh_adv_frame.pack_forget()
+
+    def show_thigh_controls(self):
+        """Thigh mode: fold / unfold the advanced sliders; IMAT Radius only for T1 TSE."""
+        if self.click_state != 2 or not self.thigh_adv_var.get():
+            self.thigh_adv_frame.pack_forget()
+            return
+        self.thigh_adv_frame.pack(padx=5, pady=5, after=self.imat_frame)
+        if self.short_sequence == 'T1_TSE':
+            self.thigh_radius_box.pack()
+        else:
+            self.thigh_radius_box.pack_forget()
 
     def flip_xy_axes(self):
         """Flip X and Y axes of the segmentation only."""
@@ -607,7 +728,7 @@ class DicomViewerApp:
                                                f"This folder has no '_F' series, but has the thigh sequence '{info[0][1]}'.\n"
                                                "Switch to thigh mode and load it?"):
                         return
-                    self.update_button_image()  # abdomen -> thigh mode
+                    self.update_button_image(confirm=False)  # abdomen -> thigh mode (clears the old views)
                     self.dicom_short_pixels, self.dicom_short_info = pixels, info
                     self.short_sequence = 'T1_TSE'
             self.image_stack = np.array(self.dicom_short_pixels)
@@ -616,6 +737,17 @@ class DicomViewerApp:
             # IMAT Contrast starts at the default of the loaded sequence
             self.imat_contrast = t1_seg.LOCAL_CONTRAST if self.short_sequence == 'T1_TSE' else dixon_local_imat.CONTRAST
             self.imat_var.set(self.imat_contrast)
+            # SAT Threshold: units, range and default of the loaded sequence
+            cfg = THIGH_SAT['T1_TSE' if self.short_sequence == 'T1_TSE' else 'DIXON_F']
+            self.thigh_sat = cfg['default']
+            self.thigh_sat_scale.config(from_=cfg['from_'], to=cfg['to'], resolution=cfg['resolution'])
+            self.thigh_sat_label.config(text=cfg['label'])
+            self.thigh_sat_var.set(self.thigh_sat)
+            self.thigh_radius = int(t1_seg.LOCAL_RADIUS_MM)
+            self.thigh_radius_var.set(self.thigh_radius)
+            self.thigh_sat_radius = int(t1_seg.SAT_RADIUS_MM)
+            self.thigh_sat_radius_var.set(self.thigh_sat_radius)
+            self.show_thigh_controls()   # IMAT Radius only for T1
             # The segmentation belongs to the previous stack: drop it, and the plot drawn from it
             self.segmentation = None
             self.ai_seg_active = False
@@ -687,12 +819,16 @@ class DicomViewerApp:
         """Keep the VAT fat fraction in step with the slider (VAT is relabelled on release)."""
         self.fat_fraction = round(float(value), 2)
 
+    def update_sat_fraction(self, value):
+        """Keep the SAT fat fraction in step with the slider (SAT is relabelled on release)."""
+        self.sat_fraction = round(float(value), 2)
+
     def busy_widgets(self):
         """Controls that are disabled while a segmentation runs."""
         return [self.switch_button, self.load_short_button, self.load_long_button, self.load_seg_button,
                 self.flip_button, self.auto_seg_button, self.show_image_button, self.save_image_button,
                 self.draw_line_button, self.thigh_button, self.ai_seg_button, self.swap_xy_button,
-                self.combined_seg_button, self.threshold_scale, self.imat_scale]
+                self.combined_seg_button, self.threshold_scale, self.sat_scale, self.imat_scale, self.thigh_sat_scale, self.thigh_radius_scale, self.thigh_sat_radius_scale]
 
     def run_busy(self, title, work, done):
         """Run work() in a background thread while a popup shows a running timer, then done(result).
@@ -770,15 +906,17 @@ class DicomViewerApp:
             messagebox.showwarning("Warning", "No image stack loaded.")
             return
         pixel_spacing = float(self.dicom_short_info[0][4][0])
-        stack, fraction = self.image_stack, self.fat_fraction
+        stack, fraction, sat_fraction = self.image_stack, self.fat_fraction, self.sat_fraction
 
         def work():
-            return segment_abdomen_stack(stack, pixel_spacing=pixel_spacing, vat_fraction=fraction, return_state=True)
+            return segment_abdomen_stack(stack, pixel_spacing=pixel_spacing, vat_fraction=fraction,
+                                         sat_fraction=sat_fraction, return_state=True)
 
         def done(result):
             self.segmentation, self.abd_state = result
             self.abd_labels = self.segmentation.copy()
             self.abd_state_fraction = fraction
+            self.abd_state_sat_fraction = sat_fraction
             self.ai_seg_active = False
             self.update_image_slice()
             self.update_fat_plot()
@@ -786,28 +924,30 @@ class DicomViewerApp:
         self.run_busy("SAT/AVT Seg", work, done)
 
     def apply_vat_fraction(self, event=None):
-        """Relabel VAT with the current VAT Fat Fraction, reusing the last SAT/AVT Seg boundary."""
+        """Relabel SAT / VAT with the current SAT and VAT Fat Fractions, reusing the last SAT/AVT Seg boundary."""
         if self.click_state != 1 or self.abd_state is None or not hasattr(self, 'image_stack'):
             return
-        if self.fat_fraction == getattr(self, 'abd_state_fraction', None):
+        if (self.fat_fraction == getattr(self, 'abd_state_fraction', None)
+                and self.sat_fraction == getattr(self, 'abd_state_sat_fraction', None)):
             return
         current = getattr(self, 'segmentation', None)
         if current is not None and self.abd_labels is not None and not np.array_equal(current, self.abd_labels):
-            if not messagebox.askyesno("VAT Fat Fraction",
+            if not messagebox.askyesno("Fat Fraction",
                                        "The segmentation was edited or loaded since SAT/AVT Seg.\n"
-                                       "Relabel VAT with the new value and discard those changes?"):
+                                       "Relabel SAT/VAT with the new values and discard those changes?"):
                 return
-        stack, state, fraction = self.image_stack, self.abd_state, self.fat_fraction
+        stack, state, fraction, sat_fraction = self.image_stack, self.abd_state, self.fat_fraction, self.sat_fraction
 
         def done(labels):
             self.segmentation = labels
             self.abd_labels = self.segmentation.copy()
             self.abd_state_fraction = fraction
-            print(f"VAT relabelled with VAT fat fraction {fraction}")
+            self.abd_state_sat_fraction = sat_fraction
+            print(f"Relabelled with SAT fat fraction {sat_fraction}, VAT fat fraction {fraction}")
             self.update_image_slice()
             self.update_fat_plot()
 
-        self.run_busy("VAT relabel", lambda: relabel_vat(stack, state, fraction), done)
+        self.run_busy("SAT/VAT relabel", lambda: relabel_vat(stack, state, fraction, sat_fraction), done)
     
     def update_imat_contrast(self, value):
         """Keep the IMAT contrast in step with the slider (IMAT is relabelled on release)."""
@@ -840,6 +980,35 @@ class DicomViewerApp:
 
         self.run_busy("IMAT relabel", lambda: t1_seg.relabel_imat(state, contrast), done)
 
+    def update_thigh_sat(self, value):
+        """Keep the thigh SAT threshold in step with the slider (Thigh Seg runs again on release)."""
+        cfg = THIGH_SAT['T1_TSE' if self.short_sequence == 'T1_TSE' else 'DIXON_F']
+        self.thigh_sat = round(float(value), 2) if cfg['resolution'] < 1 else int(round(float(value)))
+
+    def update_thigh_radius(self, value):
+        """Keep the T1 IMAT radius in step with the slider (Thigh Seg runs again on release)."""
+        self.thigh_radius = int(round(float(value)))
+
+    def update_thigh_sat_radius(self, value):
+        """Keep the T1 SAT radius in step with the slider (Thigh Seg runs again on release)."""
+        self.thigh_sat_radius = int(round(float(value)))
+
+    def apply_thigh_sat(self, event=None):
+        """Run Thigh Seg again with the new SAT threshold / IMAT radius / SAT radius, if there is a Thigh Seg to update."""
+        if self.click_state != 2 or self.thigh_state is None:
+            return
+        if (self.thigh_sat == getattr(self, 'thigh_state_sat', None)
+                and self.thigh_radius == getattr(self, 'thigh_state_radius', None)
+                and self.thigh_sat_radius == getattr(self, 'thigh_state_sat_radius', None)):
+            return
+        current = getattr(self, 'segmentation', None)
+        if current is not None and self.thigh_labels is not None and not np.array_equal(current, self.thigh_labels):
+            if not messagebox.askyesno("Thigh settings",
+                                       "The segmentation was edited or loaded since Thigh Seg.\n"
+                                       "Run Thigh Seg with the new value and discard those changes?"):
+                return
+        self.thigh_mode()
+
     def thigh_mode(self):
         if self.click_state != 2:
             messagebox.showwarning("Mode Incorrect", "Thigh segmentation is only available in Thigh Seg mode.")
@@ -851,14 +1020,15 @@ class DicomViewerApp:
             # print("No short axis slices loaded.")
             return
         pixels, spacing, sequence = self.dicom_short_pixels, self.dicom_short_info[0][4], self.short_sequence
-        contrast = self.imat_contrast
+        contrast, sat, radius, sat_radius = self.imat_contrast, self.thigh_sat, self.thigh_radius, self.thigh_sat_radius
 
         def work():
             # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence. The state
             # lets the IMAT Contrast slider relabel IMAT / muscle without segmenting again.
             if sequence == 'T1_TSE':
-                return _segment_stack_t1(pixels, pixel_spacing=spacing, contrast_thr=contrast, return_state=True)
-            fatSeg = _segment_stack(pixels)
+                return _segment_stack_t1(pixels, pixel_spacing=spacing, contrast_thr=contrast, return_state=True,
+                                         sat_thr=sat, radius_mm=radius, sat_radius_mm=sat_radius)
+            fatSeg = _segment_stack(pixels, sat_thr=sat)
             return dixon_local_imat.apply(pixels, fatSeg, spacing, contrast_thr=contrast, return_state=True)  # dixon_local_imat
 
         def done(result):
@@ -866,6 +1036,12 @@ class DicomViewerApp:
             self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
             self.thigh_labels = self.segmentation.copy()
             self.thigh_state_contrast = contrast
+            self.thigh_state_sat = sat
+            self.thigh_state_radius = radius
+            self.thigh_state_sat_radius = sat_radius
+            print(f"Thigh Seg with SAT threshold {sat}, IMAT contrast {contrast}"
+                  + (f", IMAT radius {radius} mm, SAT radius {sat_radius or 'off'}" + (' mm' if sat_radius else '')
+                     if sequence == 'T1_TSE' else ''))
             self.ai_seg_active = False
 
             self.update_image_slice()
@@ -991,10 +1167,10 @@ class DicomViewerApp:
 
         pixels, spacing = self.dicom_short_pixels, self.dicom_short_info[0][4]
         segmentation = self.segmentation.copy()
-        contrast = self.imat_contrast
+        contrast, sat = self.imat_contrast, self.thigh_sat
 
         def work():
-            conventional = _segment_stack(pixels)
+            conventional = _segment_stack(pixels, sat_thr=sat)
             conventional = dixon_local_imat.apply(pixels, conventional, spacing, contrast_thr=contrast)  # dixon_local_imat
             for s in range(segmentation.shape[2]):
                 green_mask = (segmentation[:, :, s] > 0).astype(np.uint8)
@@ -1289,6 +1465,7 @@ class DicomViewerApp:
             messagebox.showwarning("Warning", "No image stack loaded.")
             return
         popup = tk.Toplevel(self.root)
+        self.image_popup = popup   # closed when the mode is switched
         popup.title("Image Viewer with Drawing")
         popup_fig = plt.figure(figsize=(4, 4))
         popup_ax = popup_fig.add_subplot(111)

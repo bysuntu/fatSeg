@@ -40,7 +40,7 @@ Scripts that call the segmentation functions must keep their work under `if __na
 
 ## Using the app
 
-The image button at the top left switches modes. The **belly** icon is abdomen mode, the **leg** icon is thigh mode. The app opens in abdomen mode.
+The image button at the top left switches modes. The **belly** icon is abdomen mode, the **leg** icon is thigh mode. The app opens in abdomen mode. **Switching mode clears everything loaded**: the short- and long-axis series, the segmentation, drawn lines, the three views and the Show Image window, since the images and labels of one mode do not belong in the other. If there is a segmentation, you are asked first (save it before switching if you need it).
 
 ### Common to both modes
 
@@ -60,11 +60,13 @@ The image button at the top left switches modes. The **belly** icon is abdomen m
 
 1. Load the short-axis slices (a series ending in `_F`).
 2. Click **SAT/AVT Seg**.
-3. Optionally adjust VAT with the **VAT Fat Fraction** slider (see below).
+3. Optionally adjust VAT and SAT with the **VAT Fat Fraction** and **SAT Fat Fraction** sliders (see below).
 4. Check the result with **Show Image** and correct it where needed.
 5. Save.
 
-The **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40) sets which pixels inside the SAT boundary count as VAT: a pixel is VAT when its signal is at least this share of the slice's fat signal (the median brightness of its SAT). It does not change SAT or the SAT/VAT boundary, which always use 0.4. Lower values count more partly-fat pixels as VAT (VAT is mostly thin strands: about 9% more VAT per 0.05 step, more in lean patients). **Release the slider (or use the arrow keys) to apply a new value**: VAT is relabelled within a few seconds, reusing the SAT/VAT boundary of the last **SAT/AVT Seg**, and the image and VAT plot update. If the segmentation was edited by hand or loaded since then, you are asked before it is replaced. The slider is hidden in thigh mode. The thresholds actually applied are printed to the console, e.g. `Abdomen: fat signal 344-411; SAT fat fraction 0.4 (threshold 138-164), VAT fat fraction 0.4 (threshold 138-164)`.
+The **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40) sets which pixels inside the SAT boundary count as VAT: a pixel is VAT when its signal is at least this share of the slice's fat signal (the median brightness of its SAT). It does not change SAT or the SAT/VAT boundary. Lower values count more partly-fat pixels as VAT (VAT is mostly thin strands: about 9% more VAT per 0.05 step, more in lean patients). **Release the slider (or use the arrow keys) to apply a new value**: VAT is relabelled within a few seconds, reusing the SAT/VAT boundary of the last **SAT/AVT Seg**, and the image and VAT plot update. If the segmentation was edited by hand or loaded since then, you are asked before it is replaced. The slider is hidden in thigh mode. The thresholds actually applied are printed to the console, e.g. `Abdomen: fat signal 344-411; SAT fat fraction 0.4 (threshold 138-164), VAT fat fraction 0.4 (threshold 138-164)`.
+
+The **SAT Fat Fraction** slider below it works the same way for SAT (0.20–0.60, default 0.40): a pixel outside the SAT/VAT boundary is SAT when its signal is at least this share of the fat signal. It does not change VAT or the boundary; the body outline and the boundary always use 0.4 (`abd_seg.FAT_FRACTION`). Below 0.4, SAT may also take the partly fat pixels up to 2 pixels outside the body outline (`SAT_EDGE_PX`), at the skin, which the outline at 0.4 leaves out. On the abdominal scan of `01260017NHCSLX`: 0.25 gives +2.3% SAT (91% of the added pixels at the skin), 0.30 +1.5%, 0.50 −2.5%, 0.60 −5.2%. Both sliders apply on release and relabel together, in a few seconds.
 
 ### Thigh mode: SAT / IMAT / muscle
 
@@ -77,6 +79,10 @@ The **VAT Fat Fraction** slider (0.20–0.60 in steps of 0.01, default 0.40) set
 | **Swap XY** | Rotates/flips each slice of the segmentation to correct its orientation. |
 
 The **IMAT Contrast** slider (0.10–0.90 in steps of 0.01) sets how clearly a pixel inside the muscle must stand out to count as IMAT: it stays IMAT when it lies at least this far from the local muscle level (0) towards the local fat level (1), otherwise it becomes muscle (see the IMAT check in [How the thigh segmentation works](#how-the-thigh-segmentation-works)). Lower values give more IMAT, higher values less. The default depends on the loaded sequence and is set on loading: **0.25 for Dixon fat (`_F`), 0.40 for `t1_tse_tra`** (the T1 contrast is lower, so the same value gives 1.2–1.9× more IMAT on T1 than on Dixon). **Release the slider (or use the arrow keys) to apply a new value**: IMAT and muscle are relabelled in about a second, reusing the last **Thigh Seg**; SAT, bone and the thigh outline do not change. If the segmentation was edited by hand or loaded since then, you are asked before it is replaced. **Thigh Seg** and **Combined** use the value set at the time they run. The slider only re-checks pixels the first pass found as IMAT candidates; below about 0.15 that pass, not the slider, limits how much IMAT there can be. The slider is hidden in abdomen mode.
+
+Ticking **Advanced** below the IMAT Contrast slider unfolds two more sliders (unticked, they are hidden and keep their values): **SAT Threshold**, and for `t1_tse_tra` only, **IMAT Radius (mm, T1)**: the neighbourhood the local muscle level of the IMAT check is taken from (4–30 mm, default 10 mm, `t1_seg.LOCAL_RADIUS_MM`). Releasing either one runs Thigh Seg again. Smaller radii follow local brightness changes more closely and keep less IMAT; on `01260017NHCSLX` T1, IMAT is 65.8 ml at 5 mm, 71.4 ml at 10 mm and 72 ml from 15 to 30 mm (SAT unchanged). Also for `t1_tse_tra` only, **SAT Radius (mm, T1, 0 = off)** (0–30 mm, default 0 = off, `t1_seg.SAT_RADIUS_MM`) turns on a local-contrast check for SAT: a SAT pixel stays SAT when it lies at least 0.1 (`SAT_LOCAL_CONTRAST`) of the way from the local muscle level (median of muscle + IMAT within that radius) to the local fat level; pixels that fail become background at the skin and muscle elsewhere. It can only remove SAT (the partly fat pixels at the edges of the ring), and T1 SAT is already a little below Dixon, so on `rawThigh` it moves T1 further from Dixon (SAT −2.9% → −3.7% at 10 mm) — hence off by default. On `01260017NHCSLX` T1: SAT 1070 ml off, 1055 at 5 mm, 1052 at 10 mm, 1049 at 20 mm; IMAT unchanged. All sliders are reset to the sequence's defaults when a series is loaded.
+
+The **SAT Threshold** slider sets the fat level of the SAT step: fat above it that is connected to the subcutaneous ring (and passes the width rule) is SAT. Its units depend on the loaded sequence and it is reset to that sequence's default on loading: **Dixon fat (`_F`): raw signal, 50–200, default 100**; **`t1_tse_tra`: fraction of the local fat signal, 0.30–0.60, default 0.40** (`t1_seg.SAT_FRACTION`). The SAT ring decides where IMAT and muscle are searched, so **releasing the slider runs Thigh Seg again** (a few seconds; asks first if the segmentation was edited). **Combined** also uses it. Lower values give more SAT. Example, `01260017NHCSLX` (SAT / IMAT): Dixon 70 → 1166 / 63 ml, 100 → 1125 / 64 ml, 130 → 1098 / 65 ml; T1 0.35 → 1120 / 56 ml, 0.40 → 1070 / 71 ml, 0.45 → 1042 / 80 ml. On T1, IMAT reacts strongly (fat next to the ring moves between SAT and IMAT), and below about 0.35 SAT can spread into bright muscle: at 0.30 it did in that scan (SAT 1239 ml, IMAT 12 ml). Check the image when going below 0.35. The slider is hidden in abdomen mode.
 
 ## Label conventions
 
@@ -95,7 +101,7 @@ Saved files contain an **identity affine**: they don't carry patient geometry. A
 
 Implemented in `mriFat/abd_seg.py`, separately from the thigh code. On each axial slice (step 4 also uses the neighbouring slices):
 
-1. **Fat threshold:** 40% of the local fat signal (`FAT_FRACTION`) for SAT and the SAT/VAT boundary; for VAT, the **VAT Fat Fraction** set in the GUI (default 0.4) times the local fat signal. The fat signal is the median SAT intensity of the slice, smoothed over neighbouring slices. This makes volumes comparable between scans with different intensity scales and voxel sizes.
+1. **Fat threshold:** 40% of the local fat signal (`FAT_FRACTION`) for the body outline and the SAT/VAT boundary; for SAT and VAT pixels, the **SAT Fat Fraction** and **VAT Fat Fraction** set in the GUI (default 0.4 each) times the local fat signal. The fat signal is the median SAT intensity of the slice, smoothed over neighbouring slices. This makes volumes comparable between scans with different intensity scales and voxel sizes.
 2. **Body outline:** the subcutaneous fat ring, closed over small gaps and filled. **Arms are removed**, whether they lie close to the torso or touch it.
 3. **SAT/VAT boundary:** 360 rays are cast from the body centre. On each ray, SAT is the run of fat from the skin inward up to the muscle wall. Gaps of up to 2 mm are tolerated (`GAP_TOL_MM`).
 4. **Correction of faulty rays:**
@@ -155,22 +161,22 @@ Implemented separately from the Dixon fat method, so changes to it cannot affect
 1. **Resample** each slice to the Dixon pixel size (0.8 mm), where the `seg.py` settings were tuned.
 2. **Denoise** with non-local means at 3× the estimated noise level, which calms speckle in the muscle that would otherwise count as IMAT.
 3. **Fat fraction image:** each slice is divided by its local fat signal (nearby fat, smoothed over 20 mm), so fat is ~1 and muscle ~0.35 on both sides of the thigh.
-4. **Segment** with the same steps as `seg.py` (including the hip-end handling), using thresholds of 0.40 of the fat signal for both SAT and IMAT.
+4. **Segment** with the same steps as `seg.py` (including the hip-end handling), using thresholds of 0.40 of the fat signal for both SAT and IMAT. **The SAT ring is found on a slightly blurred copy** (Gaussian, 0.5 pixel; `SAT_BLUR_PX`). `seg.py` keeps a fat branch in SAT only if it is at least ~7 pixels wide all the way from the ring. T1 is sharper than Dixon and shows the thin dark fascia where a deep fat pocket (e.g. between the hamstrings) joins the ring, so T1 cut such pockets off as IMAT where Dixon kept them as SAT. The blur gives T1 about Dixon's sharpness for this decision only; IMAT and muscle use the sharp image. What the blur adds to SAT must be at least 0.6 of the fat signal in the sharp image (`SAT_BLUR_GUARD`): some T1 muscle groups are bright enough to pass the 0.40 level, and without this check they joined the SAT in one scan. For the same reason **SAT needs a clearly fat core** (above 0.6 of the fat signal, `SAT_CORE`) connected to the ring: pixels between 0.40 and 0.6 count as SAT only within 2 pixels of that core (the partial-volume edge of fat). A broad region just above 0.40 without a fat core, i.e. uniformly bright muscle, becomes muscle (it was SAT on the first slices of one `rawThigh` scan).
 5. **IMAT check by local contrast:** some muscle groups (e.g. hamstrings, adductors) are uniformly brighter on T1 without containing fat. Each IMAT pixel is compared with the median of its neighbours within 10 mm (the local muscle level): it stays IMAT when it lies at least 40% of the way from that level to the local fat level, in a speck of at least 5 pixels, otherwise it becomes muscle. Only IMAT (red) is re-checked; muscle (blue) and SAT (green) are not changed by this step.
 
-The 40% level was tuned so the T1 IMAT matches the Dixon IMAT of the same scans (see below); lower levels keep specks of grainy muscle as IMAT. The settings are at the top of `t1_seg.py` (`DENOISE_STRENGTH = 0` turns denoising off, `LOCAL_RADIUS_MM = None` turns step 5 off).
+The 40% level was tuned so the T1 IMAT matches the Dixon IMAT of the same scans (see below); lower levels keep specks of grainy muscle as IMAT. The settings are at the top of `t1_seg.py` (`DENOISE_STRENGTH = 0` turns denoising off, `SAT_BLUR_PX = 0` turns the SAT blur in step 4 off, `SAT_CORE = 0` the SAT core check, `LOCAL_RADIUS_MM = None` turns step 5 off).
 
 ### Agreement between the two sequences
 
-The Dixon method is the reference: its IMAT is checked against the scanner's fat-fraction map, which T1 cannot provide. The T1 level (40%) was tuned so the T1 IMAT matches it. On `rawThigh` (8 cases scanned with both sequences, same slice positions), T1 compared with Dixon:
+The Dixon method is the reference: its IMAT is checked against the scanner's fat-fraction map, which T1 cannot provide. The T1 level (40%) was tuned so the T1 IMAT matches it. On `rawThigh` (8 cases scanned with both sequences, same slice positions), T1 compared with Dixon (Dice with the ~1 mm in-plane offset between the two scans corrected):
 
-| | Mean difference (T1 − Dixon) | Per case | Dice |
-|---|---|---|---|
-| SAT | −3.7% | −5.2% to −2.0% | 0.955 |
-| IMAT | +3.4% | −12.7% to +18.5% | 0.504 |
-| Muscle | +2.3% | +0.5% to +4.9% | 0.948 |
+| | Mean difference (T1 − Dixon) | Mean \|difference\| | Per case | Dice |
+|---|---|---|---|---|
+| SAT | −2.9% | 2.9% | −4.8% to −1.5% | 0.967 |
+| IMAT | −2.0% | 9.0% | −15.4% to +10.8% | 0.513 |
+| Muscle | +1.8% | 1.8% | +0.2% to +4.1% | 0.952 |
 
-T1 SAT is consistently a little lower because fewer partly-fat voxels at the skin and fascia count as fat. IMAT overlap is only moderate (Dice ~0.5): IMAT streaks are one or two pixels wide, and T1 contrast cannot tell partly-fat pixels from muscle as well as the Dixon fat image (against the fat-fraction map, a third of the T1 IMAT pixels are less than 30% fat, vs 2–3% for Dixon). The volumes agree much better than the pixel positions.
+Without the SAT blur and core check (`SAT_BLUR_PX = 0`, `SAT_CORE = 0`): SAT −3.7%, IMAT +4.3% (mean |difference| 10.9%, −12.2% to +22.0%), muscle +2.3%; Dice 0.964 / 0.511 / 0.950. T1 SAT is still a little lower because fewer partly-fat voxels at the skin and fascia count as fat. IMAT overlap is only moderate (Dice ~0.5): IMAT streaks are one or two pixels wide, and T1 contrast cannot tell partly-fat pixels from muscle as well as the Dixon fat image (against the fat-fraction map, a third of the T1 IMAT pixels are less than 30% fat, vs 2–3% for Dixon). The volumes agree much better than the pixel positions.
 
 **The two levels are linked:** the T1 level is tuned to the Dixon one. If `CONTRAST` in `dixon_local_imat.py` (or anything else in the Dixon method) changes, `LOCAL_CONTRAST` in `t1_seg.py` has to be re-tuned to keep the sequences in agreement.
 

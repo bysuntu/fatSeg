@@ -22,7 +22,17 @@ Idea:
      confident fat (above the slice's Otsu threshold) smoothed over FAT_SMOOTH_MM.
      Fat becomes ~1 everywhere, muscle ~0.35, whatever the coil sensitivity.
   4. seg.segment_stack on that image with SAT_FRACTION / IMAT_FRACTION as thresholds
-     (fat ring, femur, IMAT, muscle, and the hip-end handling of the other leg).
+     (fat ring, femur, IMAT, muscle, and the hip-end handling of the other leg). The SAT
+     ring is found on a copy blurred by SAT_BLUR_PX (0 = off). seg.py keeps in SAT only fat
+     branches at least ~7 pixels wide all the way from the ring; T1 is sharper than Dixon
+     and shows the thin dark fascia where a deep fat pocket joins the ring, so T1 cut such
+     pockets off as IMAT where Dixon kept them as SAT, and T1 SAT ran 3.7% below Dixon. The
+     blur gives T1 about Dixon's sharpness for this step only; IMAT and muscle use the sharp
+     image. What the blur adds to SAT must be above SAT_BLUR_GUARD in the sharp image: some
+     T1 muscle groups pass the 0.40 level, and the blur let them join the SAT in one scan.
+     Likewise SAT needs a core above SAT_CORE connected to the ring; between SAT_FRACTION
+     and SAT_CORE a pixel is SAT only within 2 pixels of the core, so a broad, uniformly
+     bright muscle group without fat in it is not taken as SAT.
   5. IMAT pixels are checked against their neighbours. Some muscle groups (e.g.
      hamstrings / adductors) are uniformly brighter on T1 without containing fat, which a
      fat-only reference cannot tell from IMAT. Local muscle level = median of the muscle +
@@ -36,9 +46,11 @@ Idea:
 LOCAL_CONTRAST was tuned on rawThigh (8 cases with both sequences, same slice positions)
 against the Dixon method of the same scans (seg.py + dixon_local_imat.py, whose IMAT matches
 the pixels that are at least 50% fat on the scanner's fat-fraction map). T1 compared with
-Dixon: SAT -3.7%, IMAT +3.4% (-12.7% to +18.5% per case), muscle +2.3%; Dice SAT 0.96,
-IMAT 0.50, muscle 0.95. T1 cannot tell partly-fat pixels from muscle as well as Dixon, so
-its IMAT matches in volume rather than pixel by pixel.
+Dixon (SAT blur 0.5, guard 0.6, core 0.6): SAT -2.9%, IMAT -2.0% (-15.4% to +10.8% per
+case, mean |difference| 9.0%), muscle +1.8%; Dice SAT 0.967, IMAT 0.51, muscle 0.95.
+Without blur and core check: SAT -3.7%, IMAT +4.3% (-12.2% to +22.0%, mean |difference| 10.9%), muscle +2.3%. T1 cannot tell
+partly-fat pixels from muscle as well as Dixon, so its IMAT matches in volume rather than
+pixel by pixel.
 
 Labels: 0 background / bone, 1 SAT, 2 IMAT, 3 muscle.
 """
@@ -60,6 +72,12 @@ LOCAL_RADIUS_MM = 10.0   # neighbourhood for the local muscle level; None = skip
 LOCAL_CONTRAST = 0.40    # IMAT stays IMAT if this far from local muscle (0) towards local fat (1);
                          # lower values keep specks of grainy muscle as IMAT
 MIN_IMAT_PIXELS = 5      # smaller IMAT specks (at 0.8 mm pixels) count as muscle
+SAT_BLUR_PX = 0.5        # Gaussian sigma (0.8 mm pixels) of the image the SAT ring is found on; 0 = off
+SAT_BLUR_GUARD = 0.6     # SAT the blur adds must be at least this fat fraction in the sharp image
+SAT_CORE = 0.6           # SAT needs a core above this connected to the ring; between SAT_FRACTION
+                         # and this only within 2 pixels of the core; 0 = off
+SAT_RADIUS_MM = 0        # SAT local-contrast check: neighbourhood (mm) of the local muscle level; 0 = off
+SAT_LOCAL_CONTRAST = 0.1 # with it on, SAT stays SAT if this far from local muscle (0) towards local fat (1)
 
 
 def denoise(image):
@@ -146,6 +164,32 @@ def apply_contrast(labels, contrast, contrast_thr=None, min_pixels=None):
     return out
 
 
+def check_sat(image, fat_level, labels, radius_px, contrast_thr=None):
+    """SAT local-contrast check (off by default, SAT_RADIUS_MM = 0).
+
+    A SAT pixel stays SAT when it lies at least contrast_thr (default SAT_LOCAL_CONTRAST) of
+    the way from the local muscle level (median of muscle + IMAT within radius_px, as in the
+    IMAT check) to the local fat level. Failing pixels become background where they touch the
+    outside of the thigh (skin edge), otherwise muscle. On rawThigh it only removes partly fat
+    edge pixels, so T1 SAT moves away from Dixon (-2.9% -> -3.7% at 10 mm / 0.1).
+    """
+    contrast_thr = SAT_LOCAL_CONTRAST if contrast_thr is None else contrast_thr
+    contrast = imat_contrast(image, fat_level, labels, radius_px)
+    if contrast is None:
+        return labels
+    low = (labels == 1) & (contrast < contrast_thr)
+    if not low.any():
+        return labels
+    out = np.asarray(labels).copy()
+    outside = ~ndi.binary_fill_holes(labels > 0)
+    pieces, _ = ndi.label(low)
+    at_skin = np.unique(pieces[cv2.dilate(outside.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0])
+    skin = np.isin(pieces, at_skin[at_skin > 0])
+    out[low & skin] = 0
+    out[low & ~skin] = 3
+    return out
+
+
 def _prepare(im, size):
     """Steps 1-3 for one slice: resample to `size` (h, w), denoise, divide by the local fat signal.
 
@@ -174,12 +218,17 @@ def relabel_imat(state, contrast_thr):
                      for l in labels], dtype=np.int16)
 
 
-def segment_stack(slices, pixel_spacing=None, contrast_thr=None, return_state=False):
+def segment_stack(slices, pixel_spacing=None, contrast_thr=None, return_state=False, sat_thr=None, radius_mm=None,
+                  sat_radius_mm=None):
     """Segment a stack of axial T1 thigh slices: 1 SAT, 2 IMAT, 3 muscle.
 
     slices: sequence of 2D arrays. pixel_spacing: (row, col) spacing in mm of the
     slices (DICOM PixelSpacing); without it the slices are used at their own size.
     contrast_thr: IMAT contrast setting of step 5 (default LOCAL_CONTRAST).
+    sat_thr: SAT fat fraction of step 4 (default SAT_FRACTION; the GUI's thigh SAT Threshold).
+    radius_mm: neighbourhood of step 5 (default LOCAL_RADIUS_MM; the GUI's IMAT Radius).
+    sat_radius_mm: neighbourhood of the SAT local-contrast check (default SAT_RADIUS_MM,
+    0 = off; the GUI's SAT Radius), see check_sat().
     Returns an int16 array (n_slices, H, W) on the original grid; with return_state=True
     also the state for relabel_imat() (the GUI's IMAT Contrast slider).
     """
@@ -194,9 +243,14 @@ def segment_stack(slices, pixel_spacing=None, contrast_thr=None, return_state=Fa
     n = len(slices)
     denoised, fat_levels, prepared = zip(*map_slices(_prepare, slices, [(small_h, small_w)] * n))
 
-    labels = seg.segment_stack(prepared, sat_thr=SAT_FRACTION, imat_thr=IMAT_FRACTION)
-    if LOCAL_RADIUS_MM:
-        radius_px = LOCAL_RADIUS_MM / TARGET_SPACING_MM
+    labels = seg.segment_stack(prepared, sat_thr=SAT_FRACTION if sat_thr is None else sat_thr, imat_thr=IMAT_FRACTION,
+                               sat_blur=SAT_BLUR_PX, sat_guard=SAT_BLUR_GUARD, sat_core=SAT_CORE)
+    sat_radius_mm = SAT_RADIUS_MM if sat_radius_mm is None else sat_radius_mm
+    if sat_radius_mm:
+        labels = map_slices(check_sat, denoised, fat_levels, labels, [sat_radius_mm / TARGET_SPACING_MM] * n)
+    radius_mm = LOCAL_RADIUS_MM if radius_mm is None else radius_mm
+    if radius_mm:
+        radius_px = radius_mm / TARGET_SPACING_MM
         contrast = map_slices(imat_contrast, denoised, fat_levels, labels, [radius_px] * n)
     else:
         contrast = [None] * n
