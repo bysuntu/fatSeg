@@ -1964,7 +1964,19 @@ class DicomViewerApp:
         dist2 = (xx - (x0 + t * dx)) ** 2 + (yy - (y0 + t * dy)) ** 2
         self.paint_segmentation(dist2 <= (self.brush_size / 2) ** 2, slice_index)
 
+WINDOW_ASPECT = 1.6   # main window width : height at start (it stays resizable)
+
+
+def initial_geometry(root, aspect=WINDOW_ASPECT):
+    """Window size at start: 88% of the screen height, `aspect` times as wide (at most 95% of the screen width)."""
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    h = int(sh * 0.88)
+    w = min(int(h * aspect), int(sw * 0.95))
+    return f"{w}x{h}+{max((sw - w) // 2, 0)}+0"
+
+
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry(initial_geometry(root))
     app = DicomViewerApp(root)
     root.mainloop()

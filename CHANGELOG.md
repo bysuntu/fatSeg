@@ -2,6 +2,7 @@
 
 ## 2026-10-13: Short- and long-axis views swapped
 
+- **GUI: landscape window.** The main window used to open at the size of its contents, about square. It now opens at width : height = 1.6 (`WINDOW_ASPECT` in `readSpace_threeButton.py`), 88% of the screen height (at most 95% of the screen width), centred at the top; it can still be resized. E.g. 1689 × 1056 on a 1920 × 1200 screen, 1520 × 950 on 1920 × 1080.
 - **GUI:** the axial (short-axis) slice view is now the large view in the middle of the window, with the three-button slice / crop-range slider below it, where the long-axis view and its slider were. The long-axis view and its slider moved to the top right, above the area plot. Nothing else changed.
 - **Abdomen, not adopted:** a SAT/VAT vote over neighbouring slices (as for the thigh) was tested on all 10 `rawAbd` scans and made the result slightly worse against the hand-corrected files (VAT labelled SAT 110 → 118 cm³ over 3 slices, 196 cm³ over 5); the abdominal contents move between slices, and the across-slice ray check already uses the neighbours.
 
