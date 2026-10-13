@@ -47,7 +47,7 @@ The image button at the top left switches modes. The **belly** icon is abdomen m
 | Button | Function |
 |---|---|
 | **Load short axis slices** | Select the folder with the axial DICOMs. **Abdomen:** loads any series whose name ends in `_F`. **Thigh:** loads the series named exactly `6pt_DIXON_VIBE_F`; if the folder has none, any series whose name contains `t1_tse_tra` (case-insensitive). Loading a `t1_tse_tra` folder in abdomen mode offers to switch to thigh mode. |
-| **Load long axis slices** | Optional coronal localizer. Shows the position of the current axial slice and the crop range. |
+| **Load long axis slices** | Optional coronal localizer. Shows the position of the current axial slice and the crop range (top right with its own slider, above the area plot; the axial slice is the large view in the middle, with the slice / crop-range slider below it). |
 | **Load seg file (nii.gz)** | Load a previously saved segmentation. |
 | **Flip Seg X/Y** | Transpose the segmentation if it was saved in the other orientation. |
 | **Show Image** | Opens the editor: polygon or brush in green/red/blue/clear. "Over …" limits edits to pixels that already carry that label. Scroll the mouse wheel to change brush size. |

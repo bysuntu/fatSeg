@@ -506,10 +506,10 @@ class DicomViewerApp:
         bottom_frame = tk.Frame(right_frame)
         bottom_frame.grid(row=0, column=1, sticky="nsew")
         
-        # Long axis view
+        # Long axis view (right column, above the plot)
         self.fig_long_2d = plt.figure(figsize=(4, 4))
         self.ax_long_2d = self.fig_long_2d.add_subplot(111)
-        canvas_long_2d = FigureCanvasTkAgg(self.fig_long_2d, top_frame)
+        canvas_long_2d = FigureCanvasTkAgg(self.fig_long_2d, bottom_frame)
         canvas_long_2d.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.ax_long_2d.spines['top'].set_visible(False)
         self.ax_long_2d.spines['right'].set_visible(False)
@@ -518,25 +518,25 @@ class DicomViewerApp:
         self.ax_long_2d.xaxis.set_ticks([])
         self.ax_long_2d.yaxis.set_ticks([])
         
-        self.long_slider = tk.Scale(top_frame, from_=0, to=100, orient=tk.HORIZONTAL, label="Slider")
-        self.long_slider.pack(side=tk.BOTTOM, fill=tk.X, padx=10)
+        self.long_slider = tk.Scale(bottom_frame, from_=0, to=100, orient=tk.HORIZONTAL, label="Slider")
+        self.long_slider.pack(side=tk.TOP, fill=tk.X, padx=10)
         self.long_slider.bind("<ButtonRelease-1>", self.update_long_slice)
-        
-        # Slice view
+
+        # Slice view (short axis; large left column)
         self.fig_slice = plt.figure(figsize=(4, 4))
         self.ax_slice = self.fig_slice.add_subplot(111)
-        canvas_slice = FigureCanvasTkAgg(self.fig_slice, bottom_frame)
+        canvas_slice = FigureCanvasTkAgg(self.fig_slice, top_frame)
         canvas_slice.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
-        # Fat plot
+        # Three button slider (slice and crop range): below the short-axis view
+        self.twoSlider = ThreeButtonSlider(top_frame, 0, 10, 0, 5, 10, 200, 20, parent=self)
+        self.twoSlider.pack(side=tk.BOTTOM, fill=tk.X, pady=10, padx=(10, 10))
+
+        # Fat plot (right column, bottom)
         self.fig_plot = plt.figure(figsize=(4, 4))
         self.fat_plot = self.fig_plot.add_subplot(111)
         canvas_plot = FigureCanvasTkAgg(self.fig_plot, bottom_frame)
-        canvas_plot.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-        
-        # Three button slider
-        self.twoSlider = ThreeButtonSlider(bottom_frame, 0, 10, 0, 5, 10, 200, 20, parent=self)
-        self.twoSlider.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=10, padx=(10, 10))
+        canvas_plot.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         self.max_crop = 0
         self.min_crop = 0

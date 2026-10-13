@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-13: Short- and long-axis views swapped
+
+- **GUI:** the axial (short-axis) slice view is now the large view in the middle of the window, with the three-button slice / crop-range slider below it, where the long-axis view and its slider were. The long-axis view and its slider moved to the top right, above the area plot. Nothing else changed.
+- **Abdomen, not adopted:** a SAT/VAT vote over neighbouring slices (as for the thigh) was tested on all 10 `rawAbd` scans and made the result slightly worse against the hand-corrected files (VAT labelled SAT 110 → 118 cm³ over 3 slices, 196 cm³ over 5); the abdominal contents move between slices, and the across-slice ray check already uses the neighbours.
+
 ## 2026-10-13: Thigh: SAT vs IMAT by a 1 cm rolling ball, slice vote and border rule (both sequences)
 
 - **Problem:** `seg.py` keeps fat in SAT if it is at least ~7 pixels wide all the way from the ring, so deep fat pockets between muscles were SAT or IMAT depending on the width of their narrowest point. That depends on image sharpness: on Dixon the thin fascia across a pocket's neck is faint and the pocket stayed SAT, on T1 it was cut off as IMAT (6–22 ml per `rawThigh` scan), and the decision could flip from slice to slice.
