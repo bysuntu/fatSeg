@@ -206,11 +206,13 @@ def _prepare(im, size):
 def relabel_imat(state, contrast_thr):
     """Labels (n_slices, H, W) from a stored IMAT state with another contrast setting.
 
-    Only IMAT / muscle change; SAT, bone and the thigh outline come from the stored labels.
+    The contrast check changes only IMAT / muscle; bone and the thigh outline come from the
+    stored labels. Then SAT and IMAT are separated by seg.separate_sat_imat (rolling ball, slice vote, border rule).
     state: from segment_stack(..., return_state=True) or dixon_local_imat.apply(..., return_state=True).
     """
     labels = np.array([apply_contrast(l, c, contrast_thr, state['min_pixels'])
                        for l, c in zip(state['labels'], state['contrast'])], dtype=np.int16)
+    labels = seg.separate_sat_imat(labels, float(np.sqrt(state.get('pixel_mm2', TARGET_SPACING_MM ** 2))))
     size = state.get('size')
     if size is None or labels.shape[1:] == size:
         return labels
@@ -254,6 +256,7 @@ def segment_stack(slices, pixel_spacing=None, contrast_thr=None, return_state=Fa
         contrast = map_slices(imat_contrast, denoised, fat_levels, labels, [radius_px] * n)
     else:
         contrast = [None] * n
-    state = dict(labels=np.asarray(labels, np.int16), contrast=contrast, min_pixels=MIN_IMAT_PIXELS, size=(h, w))
+    state = dict(labels=np.asarray(labels, np.int16), contrast=contrast, min_pixels=MIN_IMAT_PIXELS, size=(h, w),
+                 pixel_mm2=TARGET_SPACING_MM ** 2)
     labels = relabel_imat(state, contrast_thr)
     return (labels, state) if return_state else labels

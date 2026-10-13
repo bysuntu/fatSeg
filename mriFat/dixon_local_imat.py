@@ -39,7 +39,8 @@ def apply(slices, labels, pixel_spacing, contrast_thr=None, return_state=False):
         contrast = map_slices(_contrast_one, slices, labels, [float(pixel_spacing[0])] * n)
     else:
         contrast = [None] * n
-    state = dict(labels=np.asarray(labels, np.int16), contrast=contrast, min_pixels=MIN_PIXELS, size=None)
+    state = dict(labels=np.asarray(labels, np.int16), contrast=contrast, min_pixels=MIN_PIXELS, size=None,
+                 pixel_mm2=float(pixel_spacing[0]) * float(pixel_spacing[1]))
     out = t1_seg.relabel_imat(state, CONTRAST if contrast_thr is None else contrast_thr)
     return (out, state) if return_state else out
 
