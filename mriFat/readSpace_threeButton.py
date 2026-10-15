@@ -1291,14 +1291,10 @@ class DicomViewerApp:
             messagebox.showwarning("Warning", "No segmentation loaded.")
             return
 
-        # Swap x, negate y, then rotate 90 degrees (resize to fit original shape)
-        from PIL import Image
-        orig_h, orig_w = self.segmentation.shape[0], self.segmentation.shape[1]
-        for s in range(self.segmentation.shape[2]):
-            rotated = np.rot90(np.fliplr(self.segmentation[:, :, s]))
-            img = Image.fromarray(rotated.astype(np.uint8))
-            img = img.resize((orig_w, orig_h), Image.NEAREST)
-            self.segmentation[:, :, s] = np.array(img)
+        # Swap the x and y axes of every slice (a transpose). It used to resize the result back to
+        # the old shape, which stretched the labels of non-square slices. A non-square result
+        # that no longer fits the images is shown transposed back (seg_display_slice), like Flip Seg X/Y.
+        self.segmentation = np.ascontiguousarray(np.transpose(self.segmentation, (1, 0, 2)))
 
         sliceId = self.twoSlider.get_values()[1]
         self.update_image_slice()

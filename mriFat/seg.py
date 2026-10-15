@@ -190,7 +190,8 @@ def refine_fat_ring(seg):
         allContours.append([delX * delY, contour_])
 
     if not allContours:
-        return seg, None  # No valid contours found
+        return seg  # No valid contours found: nothing to refine (it used to return a tuple here, which
+                    # made segment() fail and the slice come out empty)
 
     # Sort contours by bounding box area, descending
     allContours.sort(key=lambda x: x[0], reverse=True)
