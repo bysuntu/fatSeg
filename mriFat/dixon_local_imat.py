@@ -10,9 +10,9 @@ CONTRAST was set against the scanner's fat-fraction map (6pt_DIXON_VIBE_FF) on r
 pixels that are at least 30% fat. Without this check, half of the Dixon IMAT pixels were
 less than 30% fat.
 
-ENABLED = False turns it off (Dixon results are then those of seg.py). To remove it
-completely: delete this file and the three lines marked "dixon_local_imat" in
-readSpace_threeButton.py.
+ENABLED = False turns it off: the IMAT check is skipped (seg.py's labels then only go through
+seg.separate_sat_imat, the SAT / IMAT step that t1_seg.relabel_imat always runs). It is called
+from pipeline.segment_thigh (Thigh Seg, Combined, batch_seg.py, check_results.py).
 """
 import numpy as np
 

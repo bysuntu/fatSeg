@@ -21,6 +21,8 @@ T12S1_DIXON_VIBE/
 sat_stl/
 sat_file/
 abd_stl/
+batch_out/
+check_results_reference.json
 rawThigh/
 
 # Model weights (~93 MB each; share separately, e.g. a release or Git LFS)

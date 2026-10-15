@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-15: Batch segmentation, regression check, and fixes from a code review
+
+- **New `batch_seg.py`:** segments every case in a folder without the GUI, with the GUI's default settings, and writes labels (`.nii.gz`), per-slice areas and a volume table. See README, Other scripts.
+- **New `check_results.py`:** segments `rawThigh` (Dixon and T1) and `rawAbd` and compares labels and volumes with a stored local reference, so the effect of a code change on the results is seen before it is kept.
+- **`mriFat/pipeline.py`:** the GUI's Thigh Seg and Combined, `batch_seg.py` and `check_results.py` run the same segmentation code. **`mriFat/dicom_io.py`:** DICOM loading moved out of the GUI file (`readSpace_threeButton.parseDicomFolder` still works).
+- **Series loading:** a folder can hold several acquisitions with the same series name (`rawAbd/03260016NHCTHO/6pt_DIXON_VIBE`: #157 and #166, different matrix sizes; loading it used to fail). Only one acquisition is loaded; the GUI asks which (latest preselected), scripts use the latest or (`compare_overlap.py`, `make_abd_stl.py`) stop with the series listed. Slices are sorted along the slice normal instead of by `SliceLocation` (same order on all 33 series of `rawThigh` and `rawAbd`).
+- **Saved segmentations:** saved as shown, laid out like the images (rows, cols, slices) whichever method made them (AI Seg / Combined used to be saved transposed), with an affine from the DICOM geometry (it was the identity, or the affine of a previously loaded file). Files saved before are read as before.
+- **Orientation of AI Seg / Combined:** the segmentation's layout is now recorded; on square images (e.g. 320 × 320) AI Seg and Combined overlays were shown and painted transposed. Combined needs an AI segmentation (it used to accept a Thigh Seg one and transpose it wrongly). Swap XY is a plain transpose (it stretched labels on non-square slices).
+- **Area plot:** y axis in cm² (was labelled "Mass (g)"); the title total is a volume in cm³ (slice areas × slice spacing; it was a sum of areas).
+- **Long-axis line:** the clicked point used the row spacing for x and the column spacing for y.
+- **Thigh, `seg.py`:** `_fix_bone` also repairs a slice where no marrow was found (it was skipped); `refine_fat_ring` no longer returns a tuple when the ring has no contour (the slice came out empty). Both labels unchanged on all 16 `rawThigh` stacks.
+
 ## 2026-10-13: Short- and long-axis views swapped
 
 - **GUI: landscape window.** The main window used to open at the size of its contents, about square. It now opens at width : height = 1.6 (`WINDOW_ASPECT` in `readSpace_threeButton.py`), 88% of the screen height (at most 95% of the screen width), centred at the top; it can still be resized. E.g. 1689 × 1056 on a 1920 × 1200 screen, 1520 × 950 on 1920 × 1080.

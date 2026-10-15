@@ -1,4 +1,3 @@
-import pydicom as dicom
 import os
 import threading
 import time
@@ -12,14 +11,16 @@ import nibabel as nib
 from PIL import Image, ImageTk
 from scipy import ndimage as ndi
 
-from seg import segment_stack as _segment_stack
-from t1_seg import segment_stack as _segment_stack_t1
 import t1_seg
-import dixon_local_imat  # dixon_local_imat (optional IMAT check for Dixon)
+import dixon_local_imat   # default IMAT contrast for Dixon
 import parallel
 
 
 from abd_seg import segment_abdomen_stack, relabel_vat
+# DICOM loading lives in dicom_io; re-exported here for scripts that import it from this file
+from dicom_io import (readDicomFile, parseDicomFolder, MultipleSeriesError, SeriesChoiceCancelled,
+                      dicom_affine, slice_spacing_mm)
+import pipeline
 
 # Thigh SAT Threshold slider, per sequence: Dixon fat (_F) raw signal (seg.segment_stack sat_thr),
 # T1 TSE fat fraction of the local fat signal (t1_seg.SAT_FRACTION).
@@ -232,144 +233,6 @@ def normal_to_view_angles(normal):
 
 def normalize(slice_data):
     return (slice_data - np.min(slice_data)) / (np.max(slice_data) - np.min(slice_data))
-
-def readDicomFile(file_path, seriesName, seriesSuffix=None, seriesContains=None):
-    try:
-        ds = dicom.dcmread(file_path)
-        series_name = str(getattr(ds, 'SeriesDescription', ''))
-
-        # If a specific series is requested, check if this file matches (before decoding pixels)
-        if seriesName:
-            # if seriesName.lower() not in series_name.lower():
-            if not seriesName.lower() == series_name.lower():
-                return None
-        if seriesSuffix:
-            if not series_name.strip().lower().endswith(seriesSuffix.lower()):
-                return None
-        if seriesContains:
-            if seriesContains.lower() not in series_name.lower():
-                return None
-
-        # Check if this file has pixel data
-        if not hasattr(ds, 'pixel_array') or ds.pixel_array is None:
-            return None
-
-        pixel_array = ds.pixel_array
-        patient = getattr(ds, 'PatientName', 'Unknown')
-
-        # Check for required DICOM attributes
-        if not hasattr(ds, 'ImageOrientationPatient') or not hasattr(ds, 'ImagePositionPatient'):
-            print(f"Missing required DICOM attributes in {file_path}")
-            return None
-
-        image_orientation = ds.ImageOrientationPatient
-        image_position = ds.ImagePositionPatient
-        pixel_spacing = getattr(ds, 'PixelSpacing', [1.0, 1.0])
-        slice_thickness = float(getattr(ds, 'SliceThickness', 1.0))
-        slice_position = float(getattr(ds, 'SliceLocation', 0.0))
-        # Which acquisition the file belongs to (several can share a SeriesDescription)
-        series_uid = str(getattr(ds, 'SeriesInstanceUID', ''))
-        series_number = getattr(ds, 'SeriesNumber', None)
-        series_time = str(getattr(ds, 'SeriesTime', ''))
-
-        return [pixel_array, patient, series_name, image_orientation, image_position, pixel_spacing, slice_thickness, slice_position,
-                series_uid, series_number, series_time]
-    except Exception as e:
-        print(f"Error reading DICOM file {file_path}: {str(e)}")
-        return None
-
-class MultipleSeriesError(Exception):
-    """More than one acquisition matches and no series was chosen (not a ValueError: callers
-    use ValueError for 'no matching series' and would try another sequence instead)."""
-
-
-class SeriesChoiceCancelled(Exception):
-    """The user closed the series choice without picking one."""
-
-
-def _slice_order_key(info):
-    """Position of a slice along its own normal (ImagePositionPatient . (row x column direction))."""
-    orient = np.array(info[2], float)
-    return float(np.dot(np.array(info[3], float), np.cross(orient[:3], orient[3:])))
-
-
-def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None, seriesContains=None, choose_series=None):
-    """Pixels and info of the slices in folder_path matching the series filter, sorted along the slice normal.
-
-    info per slice: [patient, series name, ImageOrientationPatient, ImagePositionPatient, PixelSpacing,
-    SliceThickness, SliceLocation, SeriesInstanceUID, SeriesNumber, SeriesTime].
-    Only one acquisition is returned. When several match (e.g. a repeated scan with the same name),
-    choose_series(options) picks one: options is a list of dicts (number, name, time, slices, shape) and
-    it returns an index into it, or None to cancel (SeriesChoiceCancelled). Without choose_series this
-    raises MultipleSeriesError.
-    """
-    dicom_files = []
-    for root, _, files in os.walk(folder_path):
-        for f in files:
-            # Skip DICOMDIR and other non-image files
-            if f.upper() in ['DICOMDIR', 'DICOMDIR.', 'VERSION'] or f.startswith('.'):
-                continue
-            dicom_files.append(os.path.join(root, f))
-
-    print(f"Found {len(dicom_files)} potential DICOM files")
-    if not dicom_files:
-        raise ValueError("No files found in the selected folder.")
-
-    all_pixel, all_info = [], []
-    valid_series = set()
-
-    for file in dicom_files:
-        result = readDicomFile(file, seriesName, seriesSuffix, seriesContains)
-        if result is not None:
-            pixel_, patient, series_name, *info = result
-            all_pixel.append(pixel_)
-            all_info.append([patient, series_name] + info)
-            valid_series.add(series_name)
-
-    print(f"Found {len(all_pixel)} valid DICOM files with pixel data")
-    if valid_series:
-        print(f"Available series: {list(valid_series)}")
-
-    if not all_pixel:
-        if seriesName or seriesSuffix or seriesContains:
-            # List what the folder does contain, to make a naming mismatch obvious
-            found = set()
-            for file in dicom_files:
-                try:
-                    found.add(str(getattr(dicom.dcmread(file, stop_before_pixels=True), 'SeriesDescription', '')))
-                except Exception:
-                    pass
-            wanted = seriesName or (f"*{seriesContains}*" if seriesContains else f"*{seriesSuffix}")
-            raise ValueError(f"No valid DICOM files found for series '{wanted}'. Series in folder: {sorted(found) if found else 'None'}")
-        else:
-            raise ValueError("No valid DICOM files with pixel data found in the folder.")
-    
-    # One acquisition only: slices of different scans must not be interleaved in one stack
-    uids = list(dict.fromkeys(info[7] for info in all_info))
-    if len(uids) > 1:
-        options = []
-        for uid in uids:
-            members = [k for k in range(len(all_info)) if all_info[k][7] == uid]
-            first = all_info[members[0]]
-            options.append(dict(uid=uid, number=first[8], name=first[1], time=first[9], slices=len(members),
-                                shape=tuple(np.shape(all_pixel[members[0]]))))
-        options.sort(key=lambda o: (o['number'] is None, o['number'] if o['number'] is not None else 0, o['time']))
-        listing = '; '.join(f"#{o['number']} '{o['name']}' {o['slices']} slices {o['shape'][0]}x{o['shape'][1]}"
-                            for o in options)
-        if choose_series is None:
-            raise MultipleSeriesError(f"{len(options)} series match in {folder_path}: {listing}")
-        index = choose_series(options)
-        if index is None:
-            raise SeriesChoiceCancelled()
-        keep = options[index]['uid']
-        print(f"Using series #{options[index]['number']} of: {listing}")
-        members = [k for k in range(len(all_info)) if all_info[k][7] == keep]
-        all_pixel = [all_pixel[k] for k in members]
-        all_info = [all_info[k] for k in members]
-
-    # Sort by position along the slice normal (SliceLocation can be missing or 0)
-    order = sorted(range(len(all_info)), key=lambda k: _slice_order_key(all_info[k]))
-    return [all_pixel[k] for k in order], [all_info[k] for k in order]
 
 class DicomViewerApp:
     def __init__(self, root):
@@ -878,9 +741,7 @@ class DicomViewerApp:
             self.twoSlider.set_values2(self.min_crop, self.max_crop)
             self.twoSlider.set_values(self.min_crop, self.current, self.max_crop)
             self.z_positions = [info[6] for info in self.dicom_short_info]
-            self.threshold_low = np.percentile(self.image_stack, 1)
-            self.threshold_high = np.percentile(self.image_stack, 99)
-            self.image_stack = np.clip(self.image_stack, self.threshold_low, self.threshold_high)
+            self.image_stack = pipeline.clipped_stack(self.dicom_short_pixels)   # SAT/AVT Seg runs on this
             self.update_image_slice()
         except SeriesChoiceCancelled:
             return
@@ -918,26 +779,8 @@ class DicomViewerApp:
             messagebox.showerror("Error", f"Failed to load segmentation file: {str(e)}")
     
     def dicom_affine(self):
-        """NIfTI affine (RAS) of an array laid out like the short-axis images: (rows, cols, slices).
-
-        Voxel (i, j, k) is ImagePositionPatient of slice 0 + i rows along the column direction
-        (IOP[3:], PixelSpacing[0]) + j columns along the row direction (IOP[:3], PixelSpacing[1])
-        + k slice steps (first to last slice position); DICOM LPS is turned into NIfTI RAS.
-        """
-        info = self.dicom_short_info
-        orient = np.array(info[0][2], float)
-        row_dir, col_dir = orient[:3], orient[3:]
-        first = np.array(info[0][3], float)
-        if len(info) > 1:
-            step = (np.array(info[-1][3], float) - first) / (len(info) - 1)
-        else:
-            step = np.cross(row_dir, col_dir) * float(info[0][5])
-        lps = np.eye(4)
-        lps[:3, 0] = col_dir * float(info[0][4][0])
-        lps[:3, 1] = row_dir * float(info[0][4][1])
-        lps[:3, 2] = step
-        lps[:3, 3] = first
-        return np.diag([-1.0, -1.0, 1.0, 1.0]) @ lps
+        """NIfTI affine of an array laid out like the short-axis images (see dicom_io.dicom_affine)."""
+        return dicom_affine(self.dicom_short_info)
 
     def save_segmentation(self):
         if getattr(self, 'segmentation', None) is None:
@@ -1176,17 +1019,15 @@ class DicomViewerApp:
         if self.dicom_short_info is None or self.dicom_short_pixels is None:
             # print("No short axis slices loaded.")
             return
-        pixels, spacing, sequence = self.dicom_short_pixels, self.dicom_short_info[0][4], self.short_sequence
+        pixels, info, sequence = self.dicom_short_pixels, self.dicom_short_info, self.short_sequence
         contrast, sat, radius, sat_radius = self.imat_contrast, self.thigh_sat, self.thigh_radius, self.thigh_sat_radius
 
         def work():
-            # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence. The state
-            # lets the IMAT Contrast slider relabel IMAT / muscle without segmenting again.
-            if sequence == 'T1_TSE':
-                return _segment_stack_t1(pixels, pixel_spacing=spacing, contrast_thr=contrast, return_state=True,
-                                         sat_thr=sat, radius_mm=radius, sat_radius_mm=sat_radius)
-            fatSeg = _segment_stack(pixels, sat_thr=sat)
-            return dixon_local_imat.apply(pixels, fatSeg, spacing, contrast_thr=contrast, return_state=True)  # dixon_local_imat
+            # (slices, H, W): 1 SAT, 2 IMAT, 3 muscle; separate method per sequence (pipeline.py, the
+            # same steps batch_seg.py runs). The state lets the IMAT Contrast slider relabel IMAT /
+            # muscle without segmenting again.
+            return pipeline.segment_thigh(pixels, info, sequence, sat_thr=sat, contrast=contrast, radius_mm=radius,
+                                          sat_radius_mm=sat_radius, return_state=True)
 
         def done(result):
             fatSeg, self.thigh_state = result
@@ -1324,14 +1165,14 @@ class DicomViewerApp:
 
         sliceId = self.twoSlider.get_values()[1]
 
-        pixels, spacing = self.dicom_short_pixels, self.dicom_short_info[0][4]
+        pixels, info = self.dicom_short_pixels, self.dicom_short_info
         segmentation = self.segmentation.copy()
         contrast, sat = self.imat_contrast, self.thigh_sat
         to_seg = self.to_seg_orientation   # depends only on seg_transposed and the array shape
 
         def work():
-            conventional = _segment_stack(pixels, sat_thr=sat)
-            conventional = dixon_local_imat.apply(pixels, conventional, spacing, contrast_thr=contrast)  # dixon_local_imat
+            # Dixon Thigh Seg (seg.py + dixon_local_imat.py, as in pipeline.py)
+            conventional = pipeline.segment_thigh(pixels, info, 'DIXON_F', sat_thr=sat, contrast=contrast)
             for s in range(segmentation.shape[2]):
                 green_mask = (segmentation[:, :, s] > 0).astype(np.uint8)
 
@@ -1547,21 +1388,8 @@ class DicomViewerApp:
         self.update_cache()
     
     def slice_spacing_mm(self):
-        """Distance (mm) between neighbouring short-axis slices, along the slice normal.
-
-        The median gap between slice positions (ImagePositionPatient); SliceThickness when there
-        is only one slice or the positions don't give a usable gap.
-        """
-        info = self.dicom_short_info
-        thickness = float(info[0][5])
-        if len(info) < 2:
-            return thickness
-        orient = np.array(info[0][2], float)
-        normal = np.cross(orient[:3], orient[3:])
-        pos = np.array([np.dot(np.array(k[3], float), normal) for k in info])
-        gaps = np.abs(np.diff(pos))
-        gaps = gaps[gaps > 0.1 * thickness]   # repeated positions (duplicate slices) are not gaps
-        return float(np.median(gaps)) if gaps.size else thickness
+        """Distance (mm) between neighbouring short-axis slices (see dicom_io.slice_spacing_mm)."""
+        return slice_spacing_mm(self.dicom_short_info)
 
     def update_fat_plot(self):
         value = self.twoSlider.get_values()[1]
