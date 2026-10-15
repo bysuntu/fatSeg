@@ -50,7 +50,7 @@ The image button at the top left switches modes. The **belly** icon is abdomen m
 | **Load long axis slices** | Optional coronal localizer. Shows the position of the current axial slice and the crop range (top right with its own slider, above the area plot; the axial slice is the large view in the middle, with the slice / crop-range slider below it). |
 | **Load seg file (nii.gz)** | Load a previously saved segmentation. |
 | **Flip Seg X/Y** | Transpose the segmentation if it was saved in the other orientation. |
-| **Show Image** | Opens the editor: polygon or brush in green/red/blue/clear. "Over …" limits edits to pixels that already carry that label. Scroll the mouse wheel to change brush size. |
+| **Show Image** | Opens the editor: polygon or brush in green/red/blue/clear. "Over …" limits edits to pixels that already carry that label. Scroll the mouse wheel to change brush size. **Undo** (or Ctrl+Z) takes back the last brush stroke or polygon, up to 30 steps, and shows the slice it was made on; the steps are dropped when the segmentation is replaced (a new Seg run, a loaded file, a flip). |
 | **Save Segmentation** | Save as `.nii.gz`. |
 
 - **Slider:** the three-handle slider sets the crop range (blue/red handles) and the current slice (green handle).
@@ -74,7 +74,7 @@ The **SAT Fat Fraction** slider below it works the same way for SAT (0.20–0.60
 |---|---|
 | **Draw Line** | Draw a line on the long-axis image to jump to the nearest axial slice. |
 | **Thigh Seg** | Classical method. Output: **1 SAT, 2 IMAT, 3 muscle**. Dixon fat (`_F`) slices use `mriFat/seg.py`; `t1_tse_tra` slices use `mriFat/t1_seg.py` (see below). |
-| **AI Seg** | U-Net, 256×256 input. Output: a single foreground mask (label 1). Dixon fat (`_F`) only. |
+| **AI Seg** | U-Net, 256×256 input, the slices predicted 8 at a time. Output: a single foreground mask (label 1). Dixon fat (`_F`) only. |
 | **Combined** | Uses the AI Seg mask as the outline and fills in IMAT and muscle from the classical method. Run AI Seg first. Dixon fat (`_F`) only. |
 | **Swap XY** | Rotates/flips each slice of the segmentation to correct its orientation. |
 

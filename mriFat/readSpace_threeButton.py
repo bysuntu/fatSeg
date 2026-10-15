@@ -1083,38 +1083,8 @@ class DicomViewerApp:
             if self.ai_model is None or self.ai_model_path != model_path:
                 self.ai_model = tf.keras.models.load_model(model_path)
                 self.ai_model_path = model_path
-            model = self.ai_model
-
-            fatSeg = []
-            for i in range(len(pixels)):
-                cur_ = pixels[i].astype(np.float32)
-
-                # Transpose DICOM (H,W) to NIfTI orientation (W,H) to match model training data
-                cur_t = cur_.T
-                nifti_h, nifti_w = cur_t.shape[:2]
-
-                # Resize to model input size and add channel dim
-                resized = tf.image.resize(cur_t[..., np.newaxis], [IMG_HEIGHT, IMG_WIDTH])
-
-                # Normalize to [0, 1]
-                max_val = tf.reduce_max(resized)
-                if max_val > 0:
-                    resized = resized / max_val
-
-                # Add batch dimension and predict
-                input_img = tf.expand_dims(resized, axis=0)
-                prediction = model.predict(input_img, verbose=0)
-                mask = np.argmax(prediction[0], axis=-1).astype(np.uint8)
-
-                # Resize mask back to NIfTI-oriented size with nearest-neighbor
-                mask_resized = tf.image.resize(mask[..., np.newaxis], [nifti_h, nifti_w], method='nearest')
-                mask_resized = mask_resized.numpy()[:, :, 0].astype(np.uint8)
-
-                # Merge all foreground labels (1,2,3) into single green label (1)
-                mask_resized = (mask_resized > 0).astype(np.uint8)
-
-                fatSeg.append(mask_resized)
-            return fatSeg
+            # Per slice (W, H) masks, foreground (SAT, IMAT, muscle) merged into label 1
+            return pipeline.predict_ai(self.ai_model, pixels, size=(IMG_HEIGHT, IMG_WIDTH))
 
         def done(fatSeg):
             self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
@@ -1565,6 +1535,11 @@ class DicomViewerApp:
         self.set_over_image(1)
         update_seg = tk.Button(button_frame, text="Update Seg", bg="orange", fg="white", command=self.update_short_slice)
         update_seg.pack(fill=tk.X, pady=5)
+        self.undo_button = tk.Button(button_frame, text="Undo (Ctrl+Z)", command=self.undo_edit)
+        self.undo_button.pack(fill=tk.X, pady=2)
+        self.update_undo_button()
+        popup.bind('<Control-z>', lambda e: self.undo_edit())
+        popup.bind('<Control-Z>', lambda e: self.undo_edit())
         close_button = tk.Button(button_frame, text="Close", command=popup.destroy)
         close_button.pack(fill=tk.X, pady=5)
     
@@ -1669,6 +1644,7 @@ class DicomViewerApp:
 
     def on_brush_press(self, event):
         if event.inaxes == self.popup_ax and event.xdata is not None and event.ydata is not None:
+            self.begin_edit(self.twoSlider.get_values()[1])   # one brush stroke = one undo step
             self.drawing = True
             self.last_x = event.xdata
             self.last_y = event.ydata
@@ -1681,6 +1657,9 @@ class DicomViewerApp:
             self.update_cursor_ring(event)
 
     def on_brush_release(self, event):
+        if not self.drawing:
+            return   # release without a stroke (e.g. after a click outside the image)
+        self.end_edit()
         self.drawing = False
         self.last_x = None
         self.last_y = None
@@ -1750,9 +1729,8 @@ class DicomViewerApp:
                 self.popup_ax.set_xlim(xlim)
                 self.popup_ax.set_ylim(ylim)
 
-                # Redraw the canvas
-                # self.popup_ax.draw()
-                self.popup_canvas.draw()
+                # Redraw when Tk is idle: mouse moves come faster than full redraws
+                self.popup_canvas.draw_idle()
 
             self.last_x = x
             self.last_y = y
@@ -1782,7 +1760,7 @@ class DicomViewerApp:
                 # Update the existing cursor ring's position and size
                 self.cursor_ring.center = (event.xdata, event.ydata)
                 self.cursor_ring.set_radius(self.brush_size / 2)
-            self.popup_canvas.draw()
+            self.popup_canvas.draw_idle()
         
 
     def set_over_image(self, num):
@@ -1932,7 +1910,9 @@ class DicomViewerApp:
         y_coords, x_coords = np.mgrid[0:rows, 0:cols]
         coords = np.column_stack((x_coords.ravel(), y_coords.ravel()))
         inside_mask = Path(self.polygon_points).contains_points(coords).reshape(rows, cols)
+        self.begin_edit(slice_index)   # one polygon = one undo step
         self.paint_segmentation(inside_mask, slice_index)
+        self.end_edit()
 
     def paint_segmentation(self, display_mask, slice_index):
         """Relabel the pixels under display_mask (popup image coordinates).
@@ -1956,12 +1936,64 @@ class DicomViewerApp:
             return
         slice_index = self.twoSlider.get_values()[1]
         rows, cols = self.image_stack[slice_index].shape
-        yy, xx = np.mgrid[0:rows, 0:cols]
+        # Only the box around the stroke can be painted: compute the distances there
+        r = self.brush_size / 2
+        r0, r1 = max(int(np.floor(min(y0, y1) - r)), 0), min(int(np.ceil(max(y0, y1) + r)) + 1, rows)
+        c0, c1 = max(int(np.floor(min(x0, x1) - r)), 0), min(int(np.ceil(max(x0, x1) + r)) + 1, cols)
+        if r0 >= r1 or c0 >= c1:
+            return
+        yy, xx = np.mgrid[r0:r1, c0:c1]
         # Distance from each pixel to the stroke segment; within the brush radius is painted
         dx, dy = x1 - x0, y1 - y0
         t = np.clip(((xx - x0) * dx + (yy - y0) * dy) / max(dx * dx + dy * dy, 1e-9), 0, 1)
         dist2 = (xx - (x0 + t * dx)) ** 2 + (yy - (y0 + t * dy)) ** 2
-        self.paint_segmentation(dist2 <= (self.brush_size / 2) ** 2, slice_index)
+        mask = np.zeros((rows, cols), bool)
+        mask[r0:r1, c0:c1] = dist2 <= r * r
+        self.paint_segmentation(mask, slice_index)
+
+    # --- Undo of manual edits (brush strokes and polygons in the Show Image window)
+
+    UNDO_STEPS = 30   # edits kept for undo
+
+    def begin_edit(self, slice_index):
+        """Keep a copy of the slice before an edit, for undo."""
+        if getattr(self, 'segmentation', None) is None or slice_index >= self.segmentation.shape[2]:
+            return
+        stack = getattr(self, 'undo_stack', [])
+        # Steps of a segmentation that has since been replaced (new Seg run, file loaded, flip) no longer apply
+        stack = [e for e in stack if e[0] is self.segmentation][-(self.UNDO_STEPS - 1):]
+        stack.append((self.segmentation, slice_index, self.segmentation[:, :, slice_index].copy()))
+        self.undo_stack = stack
+
+    def end_edit(self):
+        """Forget the last snapshot if the edit changed nothing (e.g. no pixel had the "Over" label)."""
+        stack = getattr(self, 'undo_stack', [])
+        if stack:
+            seg, k, before = stack[-1]
+            if seg is self.segmentation and np.array_equal(seg[:, :, k], before):
+                stack.pop()
+        self.update_undo_button()
+
+    def undo_edit(self):
+        """Undo the last brush stroke or polygon; shows the slice it was made on."""
+        stack = [e for e in getattr(self, 'undo_stack', []) if e[0] is self.segmentation]
+        if not stack or self.drawing:
+            self.undo_stack = stack
+            self.update_undo_button()
+            return
+        _, k, before = stack.pop()
+        self.undo_stack = stack
+        self.segmentation[:, :, k] = before
+        lo, _, hi = self.twoSlider.get_values()
+        self.twoSlider.set_values(lo, k, hi)   # show the restored slice (edits are made inside the crop range)
+        self.update_short_slice()
+        self.update_undo_button()
+
+    def update_undo_button(self):
+        button = getattr(self, 'undo_button', None)
+        if button is not None and button.winfo_exists():
+            n = sum(1 for e in getattr(self, 'undo_stack', []) if e[0] is self.segmentation)
+            button.config(state=tk.NORMAL if n else tk.DISABLED, text=f"Undo (Ctrl+Z){f' [{n}]' if n else ''}")
 
 WINDOW_ASPECT = 1.6   # main window width : height at start (it stays resizable)
 

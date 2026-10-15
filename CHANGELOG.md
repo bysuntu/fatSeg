@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-15: Undo for manual edits; faster brush and AI Seg
+
+- **Undo:** the Show Image window has an **Undo (Ctrl+Z)** button (with the number of steps). Each brush stroke or polygon is one step, up to 30; a stroke that changed nothing is not kept. Undo restores the slice and shows it. Steps belong to the segmentation they were made on: after a new Seg run, a loaded file or a flip they are dropped.
+- **Brush:** distances are computed only in the box around each stroke segment (it was the whole slice), and the editor redraws when Tk is idle instead of on every mouse move (`draw_idle`), so painting keeps up with the mouse. Painted pixels are the same as before (300 random strokes, including at the image edges).
+- **AI Seg:** the slices are predicted 8 at a time instead of one by one (`pipeline.predict_ai`): ~2.4 s instead of ~11 s per 40-slice `rawThigh` scan (model already loaded), masks identical on 3 scans (120 slices).
+
 ## 2026-10-15: Batch segmentation, regression check, and fixes from a code review
 
 - **New `batch_seg.py`:** segments every case in a folder without the GUI, with the GUI's default settings, and writes labels (`.nii.gz`), per-slice areas and a volume table. See README, Other scripts.

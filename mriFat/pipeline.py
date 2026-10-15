@@ -87,6 +87,30 @@ def segment_thigh(pixels, info, sequence, sat_thr=None, contrast=None, radius_mm
     return result if return_state else result[0]
 
 
+def predict_ai(model, pixels, size=(256, 256), batch_size=8):
+    """AI Seg: the thigh U-Net's mask of every slice, as a list of (cols, rows) uint8 arrays, 1 = foreground.
+
+    Each slice is transposed to the NIfTI orientation the model was trained on, resized to `size`,
+    scaled to [0, 1] by its maximum, predicted (batch_size slices at a time), and the argmax label
+    map is resized back with nearest neighbour; SAT, IMAT and muscle are merged into label 1.
+    """
+    import tensorflow as tf   # slow to import (10-20 s); only AI Seg needs it
+    inputs, shapes = [], []
+    for p in pixels:
+        cur_t = np.asarray(p, np.float32).T   # DICOM (H, W) -> NIfTI orientation (W, H)
+        shapes.append(cur_t.shape[:2])
+        resized = tf.image.resize(cur_t[..., np.newaxis], list(size))
+        max_val = tf.reduce_max(resized)
+        inputs.append(resized / max_val if max_val > 0 else resized)
+    prediction = model.predict(tf.stack(inputs), batch_size=batch_size, verbose=0)
+    masks = []
+    for pred, shape in zip(prediction, shapes):
+        mask = np.argmax(pred, axis=-1).astype(np.uint8)
+        back = tf.image.resize(mask[..., np.newaxis], list(shape), method='nearest').numpy()[:, :, 0]
+        masks.append((back > 0).astype(np.uint8))
+    return masks
+
+
 def segment_abdomen(pixels, info, vat_fraction=None, sat_fraction=None):
     """SAT/AVT Seg: labels (rows, cols, slices), 1 SAT, 2 VAT, on the clipped stack as in the GUI."""
     return abd_seg.segment_abdomen_stack(clipped_stack(pixels), pixel_spacing=float(info[0][4][0]),
