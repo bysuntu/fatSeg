@@ -267,13 +267,42 @@ def readDicomFile(file_path, seriesName, seriesSuffix=None, seriesContains=None)
         pixel_spacing = getattr(ds, 'PixelSpacing', [1.0, 1.0])
         slice_thickness = float(getattr(ds, 'SliceThickness', 1.0))
         slice_position = float(getattr(ds, 'SliceLocation', 0.0))
+        # Which acquisition the file belongs to (several can share a SeriesDescription)
+        series_uid = str(getattr(ds, 'SeriesInstanceUID', ''))
+        series_number = getattr(ds, 'SeriesNumber', None)
+        series_time = str(getattr(ds, 'SeriesTime', ''))
 
-        return [pixel_array, patient, series_name, image_orientation, image_position, pixel_spacing, slice_thickness, slice_position]
+        return [pixel_array, patient, series_name, image_orientation, image_position, pixel_spacing, slice_thickness, slice_position,
+                series_uid, series_number, series_time]
     except Exception as e:
         print(f"Error reading DICOM file {file_path}: {str(e)}")
         return None
 
-def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None, seriesContains=None):
+class MultipleSeriesError(Exception):
+    """More than one acquisition matches and no series was chosen (not a ValueError: callers
+    use ValueError for 'no matching series' and would try another sequence instead)."""
+
+
+class SeriesChoiceCancelled(Exception):
+    """The user closed the series choice without picking one."""
+
+
+def _slice_order_key(info):
+    """Position of a slice along its own normal (ImagePositionPatient . (row x column direction))."""
+    orient = np.array(info[2], float)
+    return float(np.dot(np.array(info[3], float), np.cross(orient[:3], orient[3:])))
+
+
+def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None, seriesContains=None, choose_series=None):
+    """Pixels and info of the slices in folder_path matching the series filter, sorted along the slice normal.
+
+    info per slice: [patient, series name, ImageOrientationPatient, ImagePositionPatient, PixelSpacing,
+    SliceThickness, SliceLocation, SeriesInstanceUID, SeriesNumber, SeriesTime].
+    Only one acquisition is returned. When several match (e.g. a repeated scan with the same name),
+    choose_series(options) picks one: options is a list of dicts (number, name, time, slices, shape) and
+    it returns an index into it, or None to cancel (SeriesChoiceCancelled). Without choose_series this
+    raises MultipleSeriesError.
+    """
     dicom_files = []
     for root, _, files in os.walk(folder_path):
         for f in files:
@@ -315,10 +344,32 @@ def parseDicomFolder(folder_path, seriesName=None, seriesSuffix=None, seriesCont
         else:
             raise ValueError("No valid DICOM files with pixel data found in the folder.")
     
-    sorted_pixel_info = sorted([[all_pixel[k], all_info[k][6]] for k in range(len(all_info))], key=lambda x: float(x[1]))
-    all_pixel = [row[0] for row in sorted_pixel_info]
-    all_info = sorted(all_info, key=lambda x: float(x[6]))
-    return all_pixel, all_info
+    # One acquisition only: slices of different scans must not be interleaved in one stack
+    uids = list(dict.fromkeys(info[7] for info in all_info))
+    if len(uids) > 1:
+        options = []
+        for uid in uids:
+            members = [k for k in range(len(all_info)) if all_info[k][7] == uid]
+            first = all_info[members[0]]
+            options.append(dict(uid=uid, number=first[8], name=first[1], time=first[9], slices=len(members),
+                                shape=tuple(np.shape(all_pixel[members[0]]))))
+        options.sort(key=lambda o: (o['number'] is None, o['number'] if o['number'] is not None else 0, o['time']))
+        listing = '; '.join(f"#{o['number']} '{o['name']}' {o['slices']} slices {o['shape'][0]}x{o['shape'][1]}"
+                            for o in options)
+        if choose_series is None:
+            raise MultipleSeriesError(f"{len(options)} series match in {folder_path}: {listing}")
+        index = choose_series(options)
+        if index is None:
+            raise SeriesChoiceCancelled()
+        keep = options[index]['uid']
+        print(f"Using series #{options[index]['number']} of: {listing}")
+        members = [k for k in range(len(all_info)) if all_info[k][7] == keep]
+        all_pixel = [all_pixel[k] for k in members]
+        all_info = [all_info[k] for k in members]
+
+    # Sort by position along the slice normal (SliceLocation can be missing or 0)
+    order = sorted(range(len(all_info)), key=lambda k: _slice_order_key(all_info[k]))
+    return [all_pixel[k] for k in order], [all_info[k] for k in order]
 
 class DicomViewerApp:
     def __init__(self, root):
@@ -329,8 +380,11 @@ class DicomViewerApp:
         self.threshold = 0
         self.fat_fraction = 0.4   # abdomen: VAT fat threshold as a fraction of the measured fat signal
         self.sat_fraction = 0.4   # abdomen: SAT fat threshold, same units (the SAT/VAT boundary is fixed)
-        self.ai_seg_active = False
-        self.ai_model = None        # thigh U-Net, loaded on the first AI Seg click
+        self.ai_seg_active = False  # segmentation comes from AI Seg (or Combined on top of it)
+        # Segmentation array layout: False (H, W, slices) like the images (Thigh Seg, SAT/AVT Seg),
+        # True (W, H, slices) (AI Seg, Combined), None unknown (loaded file: guessed from the shape)
+        self.seg_transposed = None
+        self.ai_model = None       # thigh U-Net, loaded on the first AI Seg click
         self.ai_model_path = None
         self.cache = None
         self.dicom_long_info = None
@@ -592,6 +646,8 @@ class DicomViewerApp:
         self.abd_state = self.abd_labels = None
         self.thigh_state = self.thigh_labels = None
         self.ai_seg_active = False
+        self.seg_transposed = None
+        self.__dict__.pop('affine', None)
         self.permanent_lines = []
         self.start_point = self.end_point = None
         self.line_drawing_active = False
@@ -700,6 +756,63 @@ class DicomViewerApp:
             return slice_data.T
         return slice_data
 
+    def seg_display_slice(self, index, image_shape):
+        """Segmentation slice `index` in the orientation of the image (shape image_shape).
+
+        Uses the known layout (seg_transposed); a loaded or flipped segmentation whose shape
+        still differs from the image is transposed (square images cannot be told apart).
+        """
+        s = self.segmentation[:, :, index]
+        if self.seg_transposed:
+            s = s.T
+        if s.shape != tuple(image_shape):
+            s = s.T
+        return s
+
+    def to_seg_orientation(self, mask):
+        """A mask in image orientation, in the layout of the segmentation array (inverse of seg_display_slice)."""
+        if self.seg_transposed:
+            mask = mask.T
+        if mask.shape != self.segmentation.shape[:2]:
+            mask = mask.T
+        return mask
+
+    def choose_series(self, options):
+        """Ask which acquisition to load when several in the folder match (parseDicomFolder's choose_series).
+
+        Returns the index of the chosen option, or None if the dialog is closed. The latest
+        series (highest number) is preselected.
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Choose series")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        tk.Label(dialog, text="Several series in this folder match. Load which one?",
+                 font=("Arial", 10)).pack(padx=15, pady=(12, 6))
+
+        def fmt_time(t):
+            t = str(t).split('.')[0]
+            return f"{t[:2]}:{t[2:4]}:{t[4:6]}" if len(t) >= 6 else t
+
+        choice = tk.IntVar(value=len(options) - 1)
+        for i, o in enumerate(options):
+            tk.Radiobutton(dialog, variable=choice, value=i, anchor=tk.W, justify=tk.LEFT,
+                           text=f"#{o['number']}  {o['name']}  -  {o['slices']} slices, {o['shape'][0]} x {o['shape'][1]}"
+                                f"  (time {fmt_time(o['time'])})").pack(fill=tk.X, padx=15)
+        result = {}
+        buttons = tk.Frame(dialog)
+        buttons.pack(pady=10)
+
+        def ok():
+            result['index'] = choice.get()
+            dialog.destroy()
+
+        tk.Button(buttons, text="Load", width=10, command=ok).pack(side=tk.LEFT, padx=5)
+        tk.Button(buttons, text="Cancel", width=10, command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        dialog.grab_set()
+        dialog.wait_window()
+        return result.get('index')
+
     def load_short_files(self):
         folder = filedialog.askdirectory(title="Select DICOM Directory")
         if not folder:
@@ -709,19 +822,19 @@ class DicomViewerApp:
             # abdomen mode: any series ending with "_F". self.short_sequence picks the thigh method.
             if self.click_state == 2:
                 try:
-                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, '6pt_DIXON_VIBE_F')
+                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, '6pt_DIXON_VIBE_F', choose_series=self.choose_series)
                     self.short_sequence = 'DIXON_F'
                 except ValueError:
-                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesContains='t1_tse_tra')
+                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesContains='t1_tse_tra', choose_series=self.choose_series)
                     self.short_sequence = 'T1_TSE'
             else:
                 try:
-                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesSuffix='_F')
+                    self.dicom_short_pixels, self.dicom_short_info = parseDicomFolder(folder, seriesSuffix='_F', choose_series=self.choose_series)
                     self.short_sequence = 'DIXON_F'
                 except ValueError as no_f_series:
                     # T1 TSE is a thigh sequence: offer to switch to thigh mode instead of failing
                     try:
-                        pixels, info = parseDicomFolder(folder, seriesContains='t1_tse_tra')
+                        pixels, info = parseDicomFolder(folder, seriesContains='t1_tse_tra', choose_series=self.choose_series)
                     except ValueError:
                         raise no_f_series
                     if not messagebox.askyesno("Thigh sequence",
@@ -751,6 +864,8 @@ class DicomViewerApp:
             # The segmentation belongs to the previous stack: drop it, and the plot drawn from it
             self.segmentation = None
             self.ai_seg_active = False
+            self.seg_transposed = None
+            self.__dict__.pop('affine', None)   # affine of a seg file loaded for the previous stack
             if self.flip_axes:
                 self.flip_axes = False
                 self.flip_button.config(text="Flip Seg X/Y", bg="#FF8C00")
@@ -767,6 +882,8 @@ class DicomViewerApp:
             self.threshold_high = np.percentile(self.image_stack, 99)
             self.image_stack = np.clip(self.image_stack, self.threshold_low, self.threshold_high)
             self.update_image_slice()
+        except SeriesChoiceCancelled:
+            return
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load short axis slices: {str(e)}")
     
@@ -775,12 +892,14 @@ class DicomViewerApp:
         if not folder:
             return
         try:
-            self.dicom_long_pixels, self.dicom_long_info = parseDicomFolder(folder) #, 'localizer_cor')
+            self.dicom_long_pixels, self.dicom_long_info = parseDicomFolder(folder, choose_series=self.choose_series) #, 'localizer_cor')
             self.dicom_long_pixels = np.array(self.dicom_long_pixels)
             self.long_min = 0
             self.long_max = self.dicom_long_pixels.shape[0]
             self.long_slider.config(from_=0, to=self.long_max - 1)
             self.update_long_slice()
+        except SeriesChoiceCancelled:
+            return
         except Exception as e:
             messagebox.showerror("Error", f"Will display long axis slices after loading short axis slices") #: {str(e)}")
     
@@ -792,12 +911,38 @@ class DicomViewerApp:
             self.affine = nib.load(filename).affine
             self.segmentation = nib.load(filename).get_fdata()
             self.ai_seg_active = False
+            self.seg_transposed = None   # layout of a file is unknown
             self.update_image_slice()
             self.update_fat_plot()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load segmentation file: {str(e)}")
     
+    def dicom_affine(self):
+        """NIfTI affine (RAS) of an array laid out like the short-axis images: (rows, cols, slices).
+
+        Voxel (i, j, k) is ImagePositionPatient of slice 0 + i rows along the column direction
+        (IOP[3:], PixelSpacing[0]) + j columns along the row direction (IOP[:3], PixelSpacing[1])
+        + k slice steps (first to last slice position); DICOM LPS is turned into NIfTI RAS.
+        """
+        info = self.dicom_short_info
+        orient = np.array(info[0][2], float)
+        row_dir, col_dir = orient[:3], orient[3:]
+        first = np.array(info[0][3], float)
+        if len(info) > 1:
+            step = (np.array(info[-1][3], float) - first) / (len(info) - 1)
+        else:
+            step = np.cross(row_dir, col_dir) * float(info[0][5])
+        lps = np.eye(4)
+        lps[:3, 0] = col_dir * float(info[0][4][0])
+        lps[:3, 1] = row_dir * float(info[0][4][1])
+        lps[:3, 2] = step
+        lps[:3, 3] = first
+        return np.diag([-1.0, -1.0, 1.0, 1.0]) @ lps
+
     def save_segmentation(self):
+        if getattr(self, 'segmentation', None) is None:
+            messagebox.showwarning("Warning", "No segmentation to save.")
+            return
         file_path = filedialog.asksaveasfilename(
             defaultextension=".nii.gz",
             filetypes=[("NIfTI files", "*.nii.gz"), ("All files", "*.*")],
@@ -807,9 +952,18 @@ class DicomViewerApp:
             if not file_path.endswith(".nii.gz"):
                 file_path += ".nii.gz"
             try:
-                # Convert segmentation to int16 for compatibility Fix Bug
-                segmentation_data = self.segmentation.astype(np.int16)
-                seg = nib.Nifti1Image(segmentation_data, self.affine if hasattr(self, 'affine') else np.eye(4))
+                images = getattr(self, 'image_stack', None)
+                if images is not None and self.segmentation.shape[2] == len(images):
+                    # Save what is shown: every slice in the layout of the images (rows, cols, slices),
+                    # whichever method made it, with the geometry of the loaded DICOM series
+                    segmentation_data = np.stack([self.seg_display_slice(i, images[i].shape) for i in range(len(images))],
+                                                 axis=-1).astype(np.int16)
+                    affine = self.dicom_affine()
+                else:
+                    # No matching images loaded: keep the array and the affine it was loaded with
+                    segmentation_data = self.segmentation.astype(np.int16)
+                    affine = getattr(self, 'affine', np.eye(4))
+                seg = nib.Nifti1Image(segmentation_data, affine)
                 nib.save(seg, file_path)
                 messagebox.showinfo("Success", f"Segmentation saved to {file_path}")
             except Exception as e:
@@ -918,6 +1072,7 @@ class DicomViewerApp:
             self.abd_state_fraction = fraction
             self.abd_state_sat_fraction = sat_fraction
             self.ai_seg_active = False
+            self.seg_transposed = False
             self.update_image_slice()
             self.update_fat_plot()
 
@@ -940,6 +1095,7 @@ class DicomViewerApp:
 
         def done(labels):
             self.segmentation = labels
+            self.seg_transposed = False
             self.abd_labels = self.segmentation.copy()
             self.abd_state_fraction = fraction
             self.abd_state_sat_fraction = sat_fraction
@@ -973,6 +1129,7 @@ class DicomViewerApp:
             self.thigh_labels = self.segmentation.copy()
             self.thigh_state_contrast = contrast
             self.ai_seg_active = False
+            self.seg_transposed = False
             print(f"IMAT relabelled with IMAT contrast {contrast}")
             self.update_image_slice()
             self.update_short_slice()
@@ -1043,6 +1200,7 @@ class DicomViewerApp:
                   + (f", IMAT radius {radius} mm, SAT radius {sat_radius or 'off'}" + (' mm' if sat_radius else '')
                      if sequence == 'T1_TSE' else ''))
             self.ai_seg_active = False
+            self.seg_transposed = False
 
             self.update_image_slice()
             self.update_short_slice()
@@ -1120,6 +1278,7 @@ class DicomViewerApp:
         def done(fatSeg):
             self.segmentation = np.array(fatSeg).transpose(1, 2, 0)
             self.ai_seg_active = True
+            self.seg_transposed = True   # masks were predicted on the transposed slices
 
             self.update_image_slice()
             self.update_short_slice()
@@ -1155,12 +1314,16 @@ class DicomViewerApp:
             messagebox.showwarning("Sequence", "Combined uses the AI model, which was trained on Dixon fat (_F) images only. Use Thigh Seg for t1_tse_tra.")
             return
 
-        if not hasattr(self, 'segmentation') or self.segmentation is None:
-            messagebox.showwarning("Warning", "No segmentation loaded. Run AI Seg first.")
+        if getattr(self, 'segmentation', None) is None or not self.ai_seg_active:
+            messagebox.showwarning("Warning", "Combined needs an AI segmentation. Run AI Seg first.")
             return
 
         if self.dicom_short_info is None or self.dicom_short_pixels is None:
             messagebox.showwarning("Warning", "No short axis slices loaded.")
+            return
+
+        if self.segmentation.shape[2] != len(self.dicom_short_pixels):
+            messagebox.showwarning("Warning", "The segmentation does not match the loaded slices. Run AI Seg again.")
             return
 
         sliceId = self.twoSlider.get_values()[1]
@@ -1168,6 +1331,7 @@ class DicomViewerApp:
         pixels, spacing = self.dicom_short_pixels, self.dicom_short_info[0][4]
         segmentation = self.segmentation.copy()
         contrast, sat = self.imat_contrast, self.thigh_sat
+        to_seg = self.to_seg_orientation   # depends only on seg_transposed and the array shape
 
         def work():
             conventional = _segment_stack(pixels, sat_thr=sat)
@@ -1175,23 +1339,19 @@ class DicomViewerApp:
             for s in range(segmentation.shape[2]):
                 green_mask = (segmentation[:, :, s] > 0).astype(np.uint8)
 
-                seg2 = (conventional[s] == 2).astype(np.uint8)
-                muscle = (conventional[s] == 3).astype(np.uint8)
-
-                # Conventional results are in DICOM orientation; segmentation uses double transpose
-                seg2_t = seg2.T
-                muscle_t = muscle.T
+                # Conventional results are in image orientation; bring them to the segmentation's layout
+                seg2_t = to_seg(conventional[s] == 2)
+                muscle_t = to_seg(conventional[s] == 3)
 
                 combined = green_mask.copy()  # keep green (1) as base
-                combined[np.where((seg2_t > 0) & (green_mask > 0))] = 2   # red (IMAT)
-                combined[np.where((muscle_t > 0) & (green_mask > 0))] = 3  # blue (muscle)
+                combined[seg2_t & (green_mask > 0)] = 2   # red (IMAT)
+                combined[muscle_t & (green_mask > 0)] = 3  # blue (muscle)
 
                 segmentation[:, :, s] = combined
             return segmentation
 
         def done(result):
-            self.segmentation = result
-            self.ai_seg_active = False
+            self.segmentation = result   # same layout as the AI segmentation; Combined can be run again
 
             self.update_image_slice()
             self.update_short_slice()
@@ -1256,7 +1416,11 @@ class DicomViewerApp:
             current_long_info = self.dicom_long_info[int(self.long_slider.get())]
             current_long_pixels = self.dicom_long_pixels[int(self.long_slider.get())]
             middle_point = (np.array(self.start_point) + np.array(self.end_point)) / 2
-            middle_point_3d = current_long_info[3] + middle_point[0] * np.array(current_long_info[2][:3]) * current_long_info[4][0] + middle_point[1] * np.array(current_long_info[2][3:]) * current_long_info[4][1]
+            # x (column index) runs along the row direction cosines (IOP[:3]) in steps of the column
+            # spacing PixelSpacing[1]; y (row index) along IOP[3:] in steps of the row spacing PixelSpacing[0]
+            middle_point_3d = (np.array(current_long_info[3], float)
+                               + middle_point[0] * np.array(current_long_info[2][:3], float) * float(current_long_info[4][1])
+                               + middle_point[1] * np.array(current_long_info[2][3:], float) * float(current_long_info[4][0]))
             short_normal = np.cross(self.dicom_short_info[0][2][:3], self.dicom_short_info[0][2][3:])
             short_normal = short_normal / np.linalg.norm(short_normal)
             short_normal_position = [np.abs(np.dot(k[3], short_normal) - np.dot(middle_point_3d, short_normal)) for k in self.dicom_short_info]
@@ -1346,13 +1510,10 @@ class DicomViewerApp:
         self.ax_slice.clear()
         mri_slice = self.image_stack[slice_index]
         try:
-            inner_mask = self.segmentation[:, :, value] == 2
-            outer_mask = self.segmentation[:, :, value] == 1
-            imat_mask = self.segmentation[:, :, value] == 3
-            if inner_mask.shape != mri_slice.shape:
-                inner_mask = inner_mask.T
-                outer_mask = outer_mask.T
-                imat_mask = imat_mask.T
+            seg_slice = self.seg_display_slice(value, mri_slice.shape)
+            inner_mask = seg_slice == 2
+            outer_mask = seg_slice == 1
+            imat_mask = seg_slice == 3
             normalized_slice = normalize(mri_slice)
             rgb_slice = np.stack([normalized_slice] * 3, axis=-1)
             rgb_slice = rgb_slice * 0.8
@@ -1389,6 +1550,23 @@ class DicomViewerApp:
         self.update_fat_plot()
         self.update_cache()
     
+    def slice_spacing_mm(self):
+        """Distance (mm) between neighbouring short-axis slices, along the slice normal.
+
+        The median gap between slice positions (ImagePositionPatient); SliceThickness when there
+        is only one slice or the positions don't give a usable gap.
+        """
+        info = self.dicom_short_info
+        thickness = float(info[0][5])
+        if len(info) < 2:
+            return thickness
+        orient = np.array(info[0][2], float)
+        normal = np.cross(orient[:3], orient[3:])
+        pos = np.array([np.dot(np.array(k[3], float), normal) for k in info])
+        gaps = np.abs(np.diff(pos))
+        gaps = gaps[gaps > 0.1 * thickness]   # repeated positions (duplicate slices) are not gaps
+        return float(np.median(gaps)) if gaps.size else thickness
+
     def update_fat_plot(self):
         value = self.twoSlider.get_values()[1]
         current_slice = int(value)
@@ -1401,23 +1579,25 @@ class DicomViewerApp:
             self.fat_plot.set_title(f"Segmentation has {self.segmentation.shape[2]} slices, images have {len(info)}")
             self.fat_plot.figure.canvas.draw()
             return
+        # Per-slice areas (cm^2) of labels 1 (green), 2 (red), 3 (blue)
         sat_mass = np.zeros(self.segmentation.shape[2])
         vat_mass = np.zeros(self.segmentation.shape[2])
         imat_mass = np.zeros(self.segmentation.shape[2])
-        total_sat_vol = np.sum(self.segmentation[:, :, self.min_crop:self.max_crop + 1] == 1)
-        total_sat_mass = total_sat_vol * info[0][4][0] * info[0][4][1] * 1e-2
-        total_vat_vol = np.sum(self.segmentation[:, :, self.min_crop:self.max_crop + 1] == 2)
-        total_vat_mass = total_vat_vol * info[0][4][0] * info[0][4][1] * 1e-2
-        total_imat_vol = np.sum(self.segmentation[:, :, self.min_crop:self.max_crop + 1] == 3)
-        total_imat_mass = total_imat_vol * info[0][4][0] * info[0][4][1] * 1e-2
         slice_index = np.linspace(0, self.segmentation.shape[2] - 1, self.segmentation.shape[2])
         for i in range(self.segmentation.shape[2]):
             inner_mask = self.segmentation[:, :, i] == 2
             outer_mask = self.segmentation[:, :, i] == 1
             imat_mask = self.segmentation[:, :, i] == 3
-            sat_mass[i] = np.sum(outer_mask) * info[i][4][0] * info[i][4][1] * 1e-2
-            vat_mass[i] = np.sum(inner_mask) * info[i][4][0] * info[i][4][1] * 1e-2
-            imat_mass[i] = np.sum(imat_mask) * info[i][4][0] * info[i][4][1] * 1e-2
+            pixel_cm2 = float(info[i][4][0]) * float(info[i][4][1]) * 1e-2
+            sat_mass[i] = np.sum(outer_mask) * pixel_cm2
+            vat_mass[i] = np.sum(inner_mask) * pixel_cm2
+            imat_mass[i] = np.sum(imat_mask) * pixel_cm2
+        # Volumes (cm^3) over the crop range: each slice's area times the slice spacing
+        crop = slice(self.min_crop, self.max_crop + 1)
+        depth_cm = self.slice_spacing_mm() * 0.1
+        total_sat_mass = np.sum(sat_mass[crop]) * depth_cm
+        total_vat_mass = np.sum(vat_mass[crop]) * depth_cm
+        total_imat_mass = np.sum(imat_mass[crop]) * depth_cm
         self.fat_plot.plot(slice_index, sat_mass, 'g', label=f"Green: {sat_mass[current_slice]:.2f} cm$^2$", linewidth=0.5)
         self.fat_plot.plot(slice_index, vat_mass, 'r', label=f"Red: {vat_mass[current_slice]:.2f} cm$^2$", linewidth=0.5)
         self.fat_plot.plot(slice_index, imat_mass, 'b', label=f"Blue: {imat_mass[current_slice]:.2f} cm$^2$", linewidth=0.5)
@@ -1428,9 +1608,10 @@ class DicomViewerApp:
         self.fat_plot.scatter(current_slice, vat_mass[current_slice], c='r')
         self.fat_plot.scatter(current_slice, imat_mass[current_slice], c='k')
         self.fat_plot.set_xlabel("Slice Index")
-        self.fat_plot.set_ylabel("Mass (g)")
+        self.fat_plot.set_ylabel("Area (cm$^2$)")
         self.fat_plot.legend()
-        self.fat_plot.set_title("Total Green: {:.2f} , Red: {:.2f}, Blue: {:.2f} (cm$^2$)".format(total_sat_mass, total_vat_mass, total_imat_mass))
+        self.fat_plot.set_title("Volume, slices {}-{}: Green {:.1f}, Red {:.1f}, Blue {:.1f} (cm$^3$)".format(
+            self.min_crop, self.max_crop, total_sat_mass, total_vat_mass, total_imat_mass))
         self.fat_plot.grid(True)
         self.fat_plot.set_xlim(0, self.segmentation.shape[2] - 1)
         self.fat_plot.set_xlim(self.min_crop, self.max_crop)
@@ -1472,13 +1653,10 @@ class DicomViewerApp:
         slice_index = self.twoSlider.get_values()[1]
         mri_slice = self.image_stack[slice_index]
         try:
-            inner_mask = self.segmentation[:, :, slice_index] == 2
-            outer_mask = self.segmentation[:, :, slice_index] == 1
-            imat_mask = self.segmentation[:, :, slice_index] == 3
-            if inner_mask.shape != mri_slice.shape:
-                inner_mask = inner_mask.T
-                outer_mask = outer_mask.T
-                imat_mask = imat_mask.T
+            seg_slice = self.seg_display_slice(slice_index, mri_slice.shape)
+            inner_mask = seg_slice == 2
+            outer_mask = seg_slice == 1
+            imat_mask = seg_slice == 3
             normalized_slice = normalize(mri_slice)
             rgb_slice = np.stack([normalized_slice] * 3, axis=-1)
             rgb_slice = rgb_slice * 0.8
@@ -1602,13 +1780,10 @@ class DicomViewerApp:
         self.popup_ax.clear()
         mri_slice = self.image_stack[slice_index]
         try:
-            inner_mask = self.segmentation[:, :, slice_index] == 2
-            outer_mask = self.segmentation[:, :, slice_index] == 1
-            imat_mask = self.segmentation[:, :, slice_index] == 3
-            if inner_mask.shape != mri_slice.shape:
-                inner_mask = inner_mask.T
-                outer_mask = outer_mask.T
-                imat_mask = imat_mask.T
+            seg_slice = self.seg_display_slice(slice_index, mri_slice.shape)
+            inner_mask = seg_slice == 2
+            outer_mask = seg_slice == 1
+            imat_mask = seg_slice == 3
             normalized_slice = normalize(mri_slice)
             rgb_slice = np.stack([normalized_slice] * 3, axis=-1)
             rgb_slice = rgb_slice * 0.8
@@ -1945,8 +2120,8 @@ class DicomViewerApp:
         if new_label is None:
             return
         seg_slice = self.segmentation[:, :, slice_index]   # view: edits write through
-        # Same rule as update_popup_image: the overlay is transposed when its shape differs from the image
-        mask = display_mask if seg_slice.shape == display_mask.shape else display_mask.T
+        # Inverse of the overlay orientation used in update_popup_image
+        mask = self.to_seg_orientation(display_mask)
         if mask.shape != seg_slice.shape:
             return   # segmentation doesn't belong to this image
         seg_slice[mask & (seg_slice == self.over_image)] = new_label

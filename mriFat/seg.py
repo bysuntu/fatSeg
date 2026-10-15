@@ -458,7 +458,9 @@ def _fix_bone(parts, window=2):
         prev = bones[start]
         for i in order:
             seg1, seg2, muscle, outer = parts[i]
-            if not prev.any() or (bones[i] & prev).sum() >= 0.5 * min(bones[i].sum(), prev.sum()):
+            # A slice without bone (e.g. the marrow touched the ring and was left as IMAT) is
+            # checked too, so its marrow can be taken back from the IMAT spots
+            if not prev.any() or (bones[i].any() and (bones[i] & prev).sum() >= 0.5 * min(bones[i].sum(), prev.sum())):
                 prev = bones[i] if bones[i].any() else prev
                 continue
             pieces, m = ndi.label(seg2)
@@ -468,6 +470,8 @@ def _fix_bone(parts, window=2):
             if cover[k] <= (bones[i] & prev).sum():
                 prev = bones[i] if bones[i].any() else prev
                 continue
+            if not bones[i].any() and cover[k] < 0.5 * min((pieces == k).sum(), prev.sum()):
+                continue   # no bone here and no IMAT spot that matches the previous bone
             new_bone = ndi.binary_fill_holes(pieces == k) & (seg1 == 0)
             seg2 = ((seg2 > 0) & ~new_bone) | (bones[i] & ~new_bone)
             muscle = (muscle > 0) & ~new_bone
