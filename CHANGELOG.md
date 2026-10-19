@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-19: Thigh SAT / IMAT boundary: alternatives tested, current rule kept
+
+The current rule (fat a 10 mm ball rolling in from outside can reach is SAT) was compared with alternatives on `rawThigh` (8 cases, Dixon and T1, T1 mapped onto the Dixon grid with the DICOM geometry) and on T1 images at full resolution, where the fascia lata is visible. No alternative was better; labels unchanged.
+
+| Rule | IMAT Dixon / T1 (ml) | T1 vs Dixon IMAT mean \|diff\| | IMAT Dice | Seen on T1 |
+|---|---|---|---|---|
+| 10 mm ball (current) | 1041 / 978 | 7.8% | 0.543 | fat beneath the fascia in the grooves between the hamstrings is SAT |
+| Convex hull of the muscle envelope: fat inside IMAT | 1807 / 1749 | 4.3% | 0.639 | bridges wide concavities: subcutaneous fat (fibrous SAT texture, great saphenous vein) becomes IMAT |
+| 20 / 30 / 50 mm ball | 1301 / 1472 / 1705 (Dixon) | 7.0 / 6.5 / 8.4% | 0.59 | right at the back (fascia bridges the hamstring grooves), wrong on the inner side (fat around the saphenous vein) |
+| Non-fat specks ≤ 10–150 mm² ignored by the ball (10 mm) | 1002–977 / 941–930 | 7.6–8.2% | 0.54 | small effect; the specks that matter sit at pocket mouths, partly fragments of the fascia and its vessels |
+| 30 mm ball + specks ≤ 20 mm² ignored | 1215 / 1130 | 6.9% | 0.58 | most of the 30 mm ball's extra IMAT was caused by vessels in SAT; the rest is the groove fat above (both kinds) |
+| All non-fat pieces except the main muscle mass ignored | 842 / 798 | 8.1% | 0.50 | separate muscles (sartorius, gracilis, single hamstring bellies) no longer stop the ball: fat inside the fascia becomes SAT |
+
+- **Agreement does not choose:** T1 vs Dixon agreement stays within noise for every rule, and rules that make IMAT larger raise Dice partly by adding regions both sequences label alike by construction (with the hull, the number of pixels only one sequence calls IMAT went up).
+- **The current IMAT is a definition:** "fat not reachable by a 10 mm ball from outside", somewhat smaller than a fascia-based IMAT (Chaudry et al. 2020, MAGMA) in the posterior grooves. Matching the anatomy would need the fascia lata itself; it is visible as a continuous line on these T1 TSE images (not on Dixon).
+- **`seg.BALL_HOLE_MM2`** (new, default 0 = off): non-fat specks of at most this area, separate from the main muscle mass, do not stop the ball. Kept as an option for further tests.
+
 ## 2026-10-15: Undo for manual edits; faster brush and AI Seg
 
 - **Undo:** the Show Image window has an **Undo (Ctrl+Z)** button (with the number of steps). Each brush stroke or polygon is one step, up to 30; a stroke that changed nothing is not kept. Undo restores the slice and shows it. Steps belong to the segmentation they were made on: after a new Seg run, a loaded file or a flip they are dropped.

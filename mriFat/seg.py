@@ -341,19 +341,39 @@ def segment(inputImage,dicom_path = None, return_outer=False, sat_thr=100, imat_
 BALL_DIAMETER_MM = 10.0   # SAT vs IMAT: fat a ball of this size can reach from outside is SAT; 0 = off
 BALL_SLICE_VOTE = True    # ... decided by majority over the slice and its two neighbours
 IMAT_SAT_BORDER = 0.5     # IMAT pieces whose border is more than this share SAT become SAT; 0 = off
+BALL_HOLE_MM2 = 0         # non-fat specks up to this area (mm^2) surrounded by fat (vessels, septa in SAT)
+                          # do not stop the ball; 0 = off
 
 
-def _ball_reach(lab, pixel_mm, diameter_mm):
+def _fat_holes(free, max_px):
+    """Separate non-free pieces (8-connected) of at most max_px pixels: specks surrounded by fat or outside.
+
+    A piece connected to the muscle mass belongs to it and is far larger, so only isolated specks qualify.
+    """
+    pieces, n = ndi.label(~free, structure=np.ones((3, 3)))
+    if not n:
+        return np.zeros(free.shape, bool)
+    sizes = np.bincount(pieces.ravel(), minlength=n + 1)
+    small = sizes <= max_px
+    small[0] = False
+    small[np.argmax(sizes[1:]) + 1] = False   # the main muscle mass is never a hole, whatever max_px
+    return small[pieces]
+
+
+def _ball_reach(lab, pixel_mm, diameter_mm, hole_mm2=0):
     """Pixels of one slice a ball of diameter_mm can cover when it rolls in from outside the body.
 
     The ball may lie in fat (SAT or IMAT) and outside the body, not in muscle or bone. It can
     sit partly outside the skin, so a SAT ring thinner than the ball is still reached.
+    Non-fat specks of at most hole_mm2 surrounded by fat (vessels, septa) do not stop it.
     """
     r = diameter_mm / 2 / pixel_mm
     ri = int(np.ceil(r))
     yy, xx = np.mgrid[-ri:ri + 1, -ri:ri + 1]
     ball = ((yy ** 2 + xx ** 2) <= r * r).astype(np.uint8)
     free = (lab == 1) | (lab == 2) | ~ndi.binary_fill_holes(lab > 0)
+    if hole_mm2 > 0:
+        free = free | _fat_holes(free, hole_mm2 / pixel_mm ** 2)
     pad = ri + 2
     centres = cv2.erode(np.pad(free, pad, constant_values=True).astype(np.uint8), ball) > 0
     pieces, _ = ndi.label(centres)
@@ -377,7 +397,7 @@ def _sat_border_rule(lab, share):
     return out
 
 
-def separate_sat_imat(labels, pixel_mm, diameter_mm=None, slice_vote=None, border_share=None):
+def separate_sat_imat(labels, pixel_mm, diameter_mm=None, slice_vote=None, border_share=None, hole_mm2=None):
     """Re-decide which fat is SAT and which is IMAT (labels (n_slices, H, W); muscle and bone unchanged).
 
     1. Rolling ball (BALL_DIAMETER_MM): fat a ball of that diameter can reach from outside the
@@ -387,17 +407,20 @@ def separate_sat_imat(labels, pixel_mm, diameter_mm=None, slice_vote=None, borde
        k-1, k, k+1 give it (counting the slices where it is fat), so a pocket whose mouth is
        near the ball size does not flip from slice to slice.
     3. Border rule (IMAT_SAT_BORDER): IMAT pieces mostly surrounded by SAT become SAT.
+    BALL_HOLE_MM2: small non-fat specks inside fat (vessels, septa) do not stop the ball.
     Tuned on rawThigh (both sequences): T1 vs Dixon IMAT Dice 0.513 -> 0.536, mean |difference|
     per scan 9.0% -> 7.5%; IMAT is ~30% larger than with seg.py's SAT step alone.
     """
     diameter_mm = BALL_DIAMETER_MM if diameter_mm is None else diameter_mm
     slice_vote = BALL_SLICE_VOTE if slice_vote is None else slice_vote
     border_share = IMAT_SAT_BORDER if border_share is None else border_share
+    hole_mm2 = BALL_HOLE_MM2 if hole_mm2 is None else hole_mm2
     labels = np.asarray(labels)
     out = labels.copy()
     fat = (labels == 1) | (labels == 2)
     if diameter_mm:
-        reach = np.array(map_slices(_ball_reach, list(labels), [pixel_mm] * len(labels), [diameter_mm] * len(labels)))
+        n = len(labels)
+        reach = np.array(map_slices(_ball_reach, list(labels), [pixel_mm] * n, [diameter_mm] * n, [hole_mm2] * n))
         sat = fat & reach
         if slice_vote and len(labels) > 1:
             s, f = sat.astype(np.int16), fat.astype(np.int16)
